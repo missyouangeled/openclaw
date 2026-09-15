@@ -75,7 +75,10 @@ export default defineConfig({
   },
   test: {
     ...e2eConfig.test,
-    include: ["test/e2e/qa-lab/plugins/feishu-crabline.real-gateway.candidate.e2e.test.mts"],
+    include: [
+      "test/e2e/qa-lab/plugins/feishu-crabline.real-gateway.candidate.e2e.test.mts",
+      "extensions/qa-lab/test/slack-crabline-roundtrip.candidate.e2e.ts",
+    ],
     fileParallelism: false,
     maxWorkers: 1,
   },
