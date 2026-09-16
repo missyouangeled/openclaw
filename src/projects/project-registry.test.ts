@@ -5,10 +5,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import * as processExec from "../process/exec.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -33,10 +35,12 @@ import {
 } from "./project-registry.js";
 
 const execFileAsync = promisify(execFile);
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = createTempDirTracker();
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
+  tempDirs.cleanup();
 });
 
 async function initializeRepository(
@@ -86,6 +90,7 @@ describe("project registry", () => {
     const root = tempDirs.make("openclaw-project-schema-");
     const options = { path: path.join(root, "state.sqlite") };
     openOpenClawStateDatabase(options);
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     const { DatabaseSync } = requireNodeSqlite();
     const legacy = new DatabaseSync(options.path);
@@ -215,7 +220,7 @@ describe("project registry", () => {
     ).rejects.toBeInstanceOf(ProjectCheckoutError);
   });
 
-  it("clones a local bare fixture through the internal full-history clone boundary", async () => {
+  it.each([false, true])("clones full history after a transient failure: %s", async (failOnce) => {
     const root = tempDirs.make("openclaw-project-clone-");
     const source = await initializeRepository(root, "source");
     await fs.writeFile(path.join(source, "second.txt"), "second\n");
@@ -225,8 +230,33 @@ describe("project registry", () => {
     await execFileAsync("git", ["clone", "--bare", "--", source, bare]);
     const target = path.join(root, "managed", "fixture");
 
-    await cloneProjectCheckout({ url: bare, target });
+    const runCommand = processExec.runCommandWithTimeout;
+    const commandSpy = vi.spyOn(processExec, "runCommandWithTimeout");
+    if (failOnce) {
+      commandSpy.mockImplementationOnce(async () => {
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, "partial-clone"), "incomplete clone\n");
+        return {
+          code: 128,
+          stdout: "",
+          stderr: "fatal: unable to access repository: The requested URL returned error: 503",
+          signal: null,
+          killed: false,
+          termination: "exit",
+        };
+      });
+    }
+    commandSpy.mockImplementation(runCommand);
+    try {
+      await cloneProjectCheckout({ url: bare, target });
+      expect(commandSpy).toHaveBeenCalledTimes(failOnce ? 2 : 1);
+    } finally {
+      commandSpy.mockRestore();
+    }
 
+    await expect(fs.stat(path.join(target, "partial-clone"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(await fs.readFile(path.join(target, "second.txt"), "utf8")).toBe("second\n");
     const history = await execFileAsync("git", ["-C", target, "rev-list", "--count", "HEAD"]);
     expect(history.stdout.trim()).toBe("2");

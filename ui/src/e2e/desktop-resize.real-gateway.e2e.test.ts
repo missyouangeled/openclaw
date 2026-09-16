@@ -11,6 +11,10 @@ import type {
   desktopProofTestReport,
   readDesktopProofPhase,
 } from "../../../scripts/lib/desktop-resize-proof.mts";
+import {
+  readDesktopProofGatewayCloses,
+  readDesktopProofNodeStreamCloses,
+} from "../../../scripts/lib/desktop-resize-proof.mts";
 import { getFreePort } from "../../../src/test-utils/ports.ts";
 import { startSkillLibraryNodeProcess } from "../../../test/e2e/qa-lab/runtime/skill-library-node-process.ts";
 import { SkillLibraryWireClient } from "../../../test/e2e/qa-lab/runtime/skill-library-wire-fixture.ts";
@@ -21,6 +25,7 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 import {
   createDesktopResizeGuest,
   observeDesktopEndpointPackets,
+  observeDesktopProofRfbLifecycle,
   readDesktopResizeFixture,
   resizeSources,
   seedDesktopResizeSources,
@@ -130,17 +135,42 @@ async function captureDesktopSockets(page: Page) {
     );
     const NativeSocket = window.WebSocket;
     const sockets: WebSocket[] = [];
-    Object.assign(window, { desktopProofSockets: sockets });
+    const closes: NonNullable<DesktopViewerResizeFailure["socketCloses"]> = [];
+    Object.assign(window, { desktopProofSockets: sockets, desktopProofSocketCloses: closes });
     // noVNC checks the immediate raw-channel prototype. Observe construction
     // without subclassing or changing the native socket/prototype it receives.
     window.WebSocket = new Proxy(NativeSocket, {
       construct(target, args) {
         const socket = Reflect.construct(target, args) as WebSocket;
         if (new URL(socket.url).pathname === "/desktop/observe") {
+          const socketIndex = sockets.length;
           sockets.push(socket);
-          socket.addEventListener("close", (event) =>
-            console.info("Desktop proof socket closed", event.code, event.reason),
-          );
+          socket.addEventListener("close", (event) => {
+            // Classify the bridge/registry's fixed reasons before retaining anything:
+            // a takeover reason can include the operator's name after the colon.
+            const category =
+              event.reason === "control-taken" || event.reason.startsWith("control-taken:")
+                ? "takeover"
+                : event.reason === "authority_revoked"
+                  ? "authority-revoked"
+                  : event.reason === "desktop stream closed"
+                    ? "stream-close"
+                    : [
+                          "desktop authentication failed",
+                          "desktop authentication timed out",
+                          "desktop ARD authentication failed",
+                          "desktop VNC authentication failed",
+                        ].includes(event.reason)
+                      ? "authentication"
+                      : event.reason
+                        ? "other"
+                        : "unknown";
+            // wasClean describes the native WebSocket close handshake, not noVNC's RFB state.
+            closes.push({ socketIndex, code: event.code, wasClean: event.wasClean, category });
+            if (closes.length > 8) {
+              closes.shift();
+            }
+          });
           socket.addEventListener("error", () => console.error("Desktop proof socket error"));
         }
         return socket;
@@ -182,6 +212,7 @@ suite.define(() => {
         },
       });
       const state = gateway.state;
+      const gatewayLogFile = path.join(state.root, "desktop-gateway.log");
       state.applyEnv();
       let guest: Awaited<ReturnType<typeof createDesktopResizeGuest>> | undefined;
       let node: Awaited<ReturnType<typeof startSkillLibraryNodeProcess>> | undefined;
@@ -213,6 +244,7 @@ suite.define(() => {
             userHeader: "x-forwarded-user",
           };
           await state.writeConfig({
+            logging: { file: gatewayLogFile },
             agents: {
               defaults: {
                 workspace: state.workspaceDir,
@@ -407,6 +439,7 @@ suite.define(() => {
           phase("initial-framebuffer");
           const initial = await guest.geometry();
           await expect.poll(() => framebuffer(canvas)).toEqual(initial);
+          await panel.evaluate(observeDesktopProofRfbLifecycle);
           if (fixture.carrier === "node") {
             expect(observations.length).toBeGreaterThan(0);
             expect(
@@ -613,18 +646,30 @@ suite.define(() => {
               snapshotFramebuffer: null,
               socketCount: null,
               latestReadyState: null,
+              socketCloses: null,
+              nodeStreamCloses: null,
+              endpointCloses: packetProbe.terminalSnapshot(),
+              rfbLifecycle: null,
+              gatewayCloses: null,
             };
             // Retain known facts even if the one read-only browser snapshot cannot settle.
             context.task.meta.desktopViewerResizeFailure = diagnostic;
+            diagnostic.gatewayCloses = await readDesktopProofGatewayCloses(gatewayLogFile);
+            if (node) {
+              diagnostic.nodeStreamCloses = await readDesktopProofNodeStreamCloses(node.logFile);
+            }
             let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
             try {
               const snapshot = await Promise.race([
                 canvas.evaluateAll((canvases) => {
                   const surface = canvases.length === 1 ? canvases[0] : null;
                   const sockets: unknown = Reflect.get(window, "desktopProofSockets");
+                  const closes: unknown = Reflect.get(window, "desktopProofSocketCloses");
                   const latest: unknown = Array.isArray(sockets) ? sockets.at(-1) : null;
                   const readyState = latest instanceof WebSocket ? latest.readyState : null;
+                  const lifecycle: unknown = Reflect.get(window, "desktopProofRfbLifecycle");
                   return {
+                    rfbLifecycle: typeof lifecycle === "function" ? lifecycle() : null,
                     canvasCount: canvases.length,
                     snapshotFramebuffer:
                       surface instanceof HTMLCanvasElement
@@ -635,6 +680,7 @@ suite.define(() => {
                       readyState === 0 || readyState === 1 || readyState === 2 || readyState === 3
                         ? readyState
                         : null,
+                    socketCloses: Array.isArray(closes) ? closes.slice(-8) : null,
                   };
                 }),
                 new Promise<null>((resolve) => {
