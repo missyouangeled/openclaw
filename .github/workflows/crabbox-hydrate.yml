@@ -77,10 +77,13 @@ jobs:
             pnpm_cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/openclaw/pnpm"
             pnpm_install_root="$pnpm_cache_root/install"
             export PNPM_CONFIG_STORE_DIR="$pnpm_cache_root/store"
-            export PNPM_CONFIG_MODULES_DIR="$pnpm_install_root/node_modules"
             export PNPM_CONFIG_PACKAGE_IMPORT_METHOD="hardlink"
             export PNPM_CONFIG_VIRTUAL_STORE_DIR="$pnpm_install_root/virtual-store"
           fi
+          # Keep pnpm metadata with the importer dependencies and executable shims.
+          # Moving this tree would break relative virtual-store and workspace links.
+          workspace="$(pwd -P)"
+          export PNPM_CONFIG_MODULES_DIR="$workspace/node_modules"
           export PATH="$PNPM_HOME:$PATH"
           {
             echo "XDG_CACHE_HOME=$XDG_CACHE_HOME"
@@ -155,28 +158,28 @@ jobs:
             fi
           }
           prepare_crabbox_pnpm_dirs() {
-            case "${PNPM_CONFIG_MODULES_DIR:?}" in "$pnpm_install_root"/*) ;; *) echo "::error::PNPM_CONFIG_MODULES_DIR must stay under $pnpm_install_root"; exit 1 ;; esac
+            case "${PNPM_CONFIG_MODULES_DIR:?}" in "$workspace/node_modules") ;; *) echo "::error::PNPM_CONFIG_MODULES_DIR must be the importer node_modules"; exit 1 ;; esac
             case "${PNPM_CONFIG_VIRTUAL_STORE_DIR:?}" in "$pnpm_install_root"/*) ;; *) echo "::error::PNPM_CONFIG_VIRTUAL_STORE_DIR must stay under $pnpm_install_root"; exit 1 ;; esac
+            if [ -L "$PNPM_CONFIG_MODULES_DIR" ]; then
+              if [ "$(readlink "$PNPM_CONFIG_MODULES_DIR")" != "$pnpm_install_root/node_modules" ]; then
+                echo "::error::Refusing unexpected importer node_modules link"
+                exit 1
+              fi
+              rm -f -- "$PNPM_CONFIG_MODULES_DIR"
+            fi
             rm -rf -- "$pnpm_install_root"
             mkdir -p "$pnpm_install_root" "$PNPM_CONFIG_STORE_DIR"
             require_safe_writable_dir "$pnpm_install_root"
             require_safe_writable_dir "$PNPM_CONFIG_STORE_DIR"
             mkdir -p "$PNPM_CONFIG_MODULES_DIR" "$PNPM_CONFIG_VIRTUAL_STORE_DIR"
+            require_safe_writable_dir "$PNPM_CONFIG_MODULES_DIR"
             if [ "$PNPM_CONFIG_STORE_DIR" != "$preferred_pnpm_store" ] &&
-              [ "$(stat -c %d "$PNPM_CONFIG_STORE_DIR")" != "$(stat -c %d "$PNPM_CONFIG_MODULES_DIR")" ]; then
-              echo "::error::Fallback pnpm store and modules directories must share a filesystem"
+              [ "$(stat -c %d "$PNPM_CONFIG_STORE_DIR")" != "$(stat -c %d "$PNPM_CONFIG_VIRTUAL_STORE_DIR")" ]; then
+              echo "::error::Fallback pnpm store and virtual-store directories must share a filesystem"
               exit 1
             fi
           }
           prepare_crabbox_pnpm_dirs
-          if [ -L node_modules ] && [ "$(readlink node_modules)" = "${PNPM_CONFIG_MODULES_DIR:-}" ]; then
-            rm -f node_modules
-          fi
-          if [ -n "${PNPM_CONFIG_MODULES_DIR:-}" ]; then
-            mkdir -p "$PNPM_CONFIG_MODULES_DIR"
-            ln -sfn . "$PNPM_CONFIG_MODULES_DIR/node_modules"
-            export NODE_PATH="$PNPM_CONFIG_MODULES_DIR${NODE_PATH:+:$NODE_PATH}"
-          fi
           pnpm_install_artifacts_ready() {
             test -s "$PNPM_CONFIG_MODULES_DIR/.modules.yaml" &&
               test -x "$PNPM_CONFIG_MODULES_DIR/.bin/oxfmt" &&
@@ -227,11 +230,10 @@ jobs:
             wait "$pnpm_pid"
           }
           run_pnpm_install || run_pnpm_install
-          if [ -n "${PNPM_CONFIG_MODULES_DIR:-}" ]; then
-            rm -rf node_modules
-            ln -sfn "$PNPM_CONFIG_MODULES_DIR" node_modules
-            ln -sfn . "$PNPM_CONFIG_MODULES_DIR/node_modules"
-          fi
+          pnpm_install_artifacts_ready || {
+            echo "::error::pnpm install left incomplete importer dependencies"
+            exit 1
+          }
 
       - name: Fetch main ref
         shell: bash

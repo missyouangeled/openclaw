@@ -6,15 +6,17 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   readFileSync,
   renameSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 import JSZip from "jszip";
@@ -2592,6 +2594,191 @@ function workflowStep(job: WorkflowJob, stepName: string): WorkflowStep {
     throw new Error(`Expected workflow step ${stepName}`);
   }
   return step;
+}
+
+function runCrabboxHydrationFixture(
+  outcome: "success" | "metadata-only" | "installer-failure" | "unexpected-link",
+) {
+  const root = realpathSync(tempDirs.make("crabbox-hydration-"));
+  const workspace = join(root, "workspace");
+  const bin = join(root, "bin");
+  const installRoot = join(root, "install");
+  const modules = join(workspace, "node_modules");
+  const virtualStore = join(installRoot, "virtual-store");
+  const home = join(root, "home");
+  const githubEnv = join(root, "github-env");
+  const installs = join(root, "installs");
+  const unexpected = join(root, "unexpected");
+  for (const directory of [workspace, bin, home, unexpected]) {
+    mkdirSync(directory, { recursive: true });
+  }
+  writeFileSync(githubEnv, "");
+  writeFileSync(installs, "");
+  writeFileSync(join(workspace, "package.json"), '{"packageManager":"pnpm@12.3.4"}\n');
+  writeFileSync(join(unexpected, "sentinel"), "preserve\n");
+  const writeTool = (name: string, body: string) =>
+    writeFileSync(join(bin, name), "#!/bin/sh\nset -eu\n" + body, { mode: 0o755 });
+
+  // Stub provisioning before the parsed shell can reach a real package manager or cache.
+  writeTool(
+    "node",
+    `case "$*" in
+  "-e "*) printf 'pnpm@12.3.4' ;;
+  ".github/actions/setup-pnpm-store-cache/seed-pnpm-from-image.mjs pnpm@12.3.4") ;;
+  "-p process.execPath") printf '%s/node' "$FIXTURE_BIN" ;;
+  "-v") printf 'v24.18.1\\n' ;;
+  *) exit 91 ;;
+esac
+`,
+  );
+  writeTool(
+    "corepack",
+    `case "$*" in
+  "enable --install-directory $PNPM_HOME"|"prepare pnpm@12.3.4 --activate") ;;
+  *) exit 92 ;;
+esac
+`,
+  );
+  writeTool("npm", '[ "$*" = "-v" ]\nprintf "11.6.0\\n"\n');
+  writeTool("docker", '[ "$1" = "ps" ]\n');
+  writeTool("setsid", 'printf "%s\\n" "$$" >> "$FIXTURE_PIDS"\nexec "$@"\n');
+  writeTool(
+    "pnpm",
+    `if [ "$*" = "-v" ]; then printf '12.3.4\\n'; exit 0; fi
+[ "$1" = install ]
+[ "$PWD" = "$GITHUB_WORKSPACE" ]
+[ "$PNPM_CONFIG_MODULES_DIR" = "$GITHUB_WORKSPACE/node_modules" ]
+[ "$PNPM_CONFIG_VIRTUAL_STORE_DIR" = "$FIXTURE_INSTALL/virtual-store" ]
+printf 'install\\n' >> "$FIXTURE_INSTALLS"
+if [ "$FIXTURE_OUTCOME" = installer-failure ]; then exit 17; fi
+printf '{"virtualStoreDir":"%s"}\\n' "$PNPM_CONFIG_VIRTUAL_STORE_DIR" > "$PNPM_CONFIG_MODULES_DIR/.modules.yaml"
+if [ "$FIXTURE_OUTCOME" = metadata-only ]; then exit 0; fi
+package="$PNPM_CONFIG_VIRTUAL_STORE_DIR/oxfmt/node_modules/oxfmt"
+mkdir -p "$package/bin" "$PNPM_CONFIG_MODULES_DIR/.bin" "$PNPM_CONFIG_MODULES_DIR/typescript"
+printf '#!/bin/sh\\nprintf "hydrated-bin-ok\\\\n"\\n' > "$package/bin/oxfmt"
+chmod +x "$package/bin/oxfmt"
+printf '{}\\n' > "$PNPM_CONFIG_MODULES_DIR/typescript/package.json"
+ln -s "$FIXTURE_PACKAGE_LINK" "$PNPM_CONFIG_MODULES_DIR/oxfmt"
+ln -s ../oxfmt/bin/oxfmt "$PNPM_CONFIG_MODULES_DIR/.bin/oxfmt"
+`,
+  );
+  if (outcome === "unexpected-link") {
+    symlinkSync(unexpected, modules);
+  } else if (outcome === "installer-failure") {
+    mkdirSync(join(modules, ".bin"), { recursive: true });
+    mkdirSync(join(modules, "typescript"));
+    writeFileSync(join(modules, ".modules.yaml"), "stale metadata\n");
+    writeFileSync(join(modules, "typescript/package.json"), "{}\n");
+    writeFileSync(join(modules, ".bin/oxfmt"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  const env: NodeJS.ProcessEnv = {
+    PATH: `${bin}:/usr/bin:/bin`,
+    HOME: home,
+    CI: "true",
+    GITHUB_WORKSPACE: workspace,
+    GITHUB_RUN_ID: "1",
+    GITHUB_ENV: githubEnv,
+    GITHUB_PATH: join(root, "github-path"),
+    RUNNER_TEMP: join(root, "runner"),
+    RUNNER_TOOL_CACHE: join(root, "tools"),
+    TMPDIR: join(root, "tmp"),
+    XDG_CACHE_HOME: join(root, "cache"),
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_STATE_HOME: join(root, "state"),
+    COREPACK_HOME: join(root, "corepack"),
+    PNPM_HOME: join(root, "pnpm-home"),
+    PNPM_CONFIG_STORE_DIR: join(root, "store"),
+    PNPM_CONFIG_MODULES_DIR: modules,
+    PNPM_CONFIG_VIRTUAL_STORE_DIR: virtualStore,
+    PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false",
+    CRABBOX_ID: "fixture",
+    CRABBOX_JOB: "hydrate",
+    FIXTURE_BIN: bin,
+    FIXTURE_INSTALL: installRoot,
+    FIXTURE_INSTALLS: installs,
+    FIXTURE_OUTCOME: outcome,
+    FIXTURE_PIDS: join(root, "pids"),
+    FIXTURE_PACKAGE_LINK: relative(modules, join(virtualStore, "oxfmt/node_modules/oxfmt")),
+  };
+  for (const key of [
+    "RUNNER_TEMP",
+    "RUNNER_TOOL_CACHE",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "COREPACK_HOME",
+    "PNPM_HOME",
+  ]) {
+    mkdirSync(env[key]!, { recursive: true });
+  }
+  const hydrate = workflowJob(CRABBOX_HYDRATE_WORKFLOW, "hydrate");
+  let setup = workflowStep(hydrate, "Setup pnpm and dependencies").run!;
+  for (const [production, fixture] of [
+    ["/var/tmp/openclaw-pnpm", installRoot],
+    ["/var/cache/crabbox/pnpm/store", join(root, "store")],
+  ]) {
+    expect(setup.split(production)).toHaveLength(2);
+    setup = setup.replace(production, fixture);
+    expect(setup).not.toContain(production);
+  }
+  const run = (script: string, childEnv = env) => {
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-c", script], {
+      cwd: workspace,
+      encoding: "utf8",
+      env: childEnv,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    return result;
+  };
+  const setupResult = run(setup);
+  if (existsSync(env.FIXTURE_PIDS!)) {
+    for (const pid of readFileSync(env.FIXTURE_PIDS!, "utf8").trim().split("\n")) {
+      expect(() => process.kill(Number(pid), 0)).toThrow(
+        expect.objectContaining({ code: "ESRCH" }),
+      );
+    }
+  }
+  return {
+    workspace,
+    modules,
+    virtualStore,
+    unexpected,
+    setupResult,
+    installs: readFileSync(installs, "utf8"),
+    ready: join(home, ".crabbox/actions/fixture.env"),
+    consume() {
+      const metadata = readFileSync(join(modules, ".modules.yaml"), "utf8");
+      const target = realpathSync(join(modules, ".bin/oxfmt"));
+      const hydratedEnv = { ...env };
+      for (const line of readFileSync(githubEnv, "utf8").trim().split("\n")) {
+        const separator = line.indexOf("=");
+        expect(separator).toBeGreaterThan(0);
+        hydratedEnv[line.slice(0, separator)] = line.slice(separator + 1);
+      }
+      expect(hydratedEnv.CRABBOX_PNPM_MODULES_DIR).toBe(modules);
+      const mark = run(workflowStep(hydrate, "Mark Crabbox ready").run!, hydratedEnv);
+      expect(mark.status, mark.stderr).toBe(0);
+      const reusable = join(home, ".crabbox/actions/fixture.env.sh");
+      expect(readFileSync(reusable, "utf8")).not.toMatch(
+        /export PNPM_CONFIG_(MODULES_DIR|VIRTUAL_STORE_DIR)=/u,
+      );
+      const consumer = run(
+        'set -eu\n. "$REUSABLE_ENV"\n' +
+          'test -z "${PNPM_CONFIG_MODULES_DIR+x}${PNPM_CONFIG_VIRTUAL_STORE_DIR+x}"\n' +
+          '"$CRABBOX_PNPM_MODULES_DIR/.bin/oxfmt"\n',
+        { PATH: env.PATH, HOME: home, REUSABLE_ENV: reusable },
+      );
+      expect(consumer.status, consumer.stderr).toBe(0);
+      expect(consumer.stdout).toBe("hydrated-bin-ok\n");
+      expect(lstatSync(modules).isDirectory()).toBe(true);
+      expect(realpathSync(join(modules, ".bin/oxfmt"))).toBe(target);
+      expect(target).toBe(join(virtualStore, "oxfmt/node_modules/oxfmt/bin/oxfmt"));
+      expect(readFileSync(join(modules, ".modules.yaml"), "utf8")).toBe(metadata);
+      expect(JSON.parse(metadata).virtualStoreDir).toBe(virtualStore);
+    },
+  };
 }
 
 function releasePublishOrchestration(job: WorkflowJob): WorkflowStep {
@@ -7502,6 +7689,44 @@ test "$package_manager" = "pnpm@12.1.0"
     );
   });
 
+  it("preserves Crabbox hydration importer metadata and bins through reusable handoff", () => {
+    const fixture = runCrabboxHydrationFixture("success");
+    expect(fixture.setupResult.status, fixture.setupResult.stderr).toBe(0);
+    expect(fixture.installs).toBe("install\n");
+    fixture.consume();
+    expect(readFileSync(fixture.ready, "utf8")).toContain(`WORKSPACE=${fixture.workspace}\n`);
+  });
+
+  it("rejects Crabbox hydration metadata-only installer success before handoff", () => {
+    const fixture = runCrabboxHydrationFixture("metadata-only");
+    expect(fixture.setupResult.status).toBe(1);
+    expect(fixture.setupResult.stdout).toContain("incomplete importer dependencies");
+    expect(fixture.installs).toBe("install\n");
+    expect(existsSync(join(fixture.modules, ".modules.yaml"))).toBe(true);
+    expect(existsSync(join(fixture.modules, ".bin/oxfmt"))).toBe(false);
+    expect(existsSync(fixture.ready)).toBe(false);
+  });
+
+  it("preserves Crabbox hydration installer failure despite stale ready artifacts", () => {
+    const fixture = runCrabboxHydrationFixture("installer-failure");
+    expect(fixture.setupResult.status).toBe(17);
+    expect(fixture.installs).toBe("install\ninstall\n");
+    expect(readFileSync(join(fixture.modules, ".modules.yaml"), "utf8")).toBe("stale metadata\n");
+    expect(existsSync(join(fixture.modules, ".bin/oxfmt"))).toBe(true);
+    expect(existsSync(fixture.ready)).toBe(false);
+  });
+
+  it("rejects Crabbox hydration unexpected importer symlinks without touching targets", () => {
+    const fixture = runCrabboxHydrationFixture("unexpected-link");
+    expect(fixture.setupResult.status).toBe(1);
+    expect(fixture.setupResult.stdout).toContain("Refusing unexpected importer node_modules link");
+    expect(fixture.installs).toBe("");
+    expect(lstatSync(fixture.modules).isSymbolicLink()).toBe(true);
+    expect(realpathSync(fixture.modules)).toBe(fixture.unexpected);
+    expect(readFileSync(join(fixture.unexpected, "sentinel"), "utf8")).toBe("preserve\n");
+    expect(existsSync(fixture.ready)).toBe(false);
+  });
+
   it("keeps Crabbox hydration compatible with local Actions replay", () => {
     const crabboxConfig = parse(readFileSync(CRABBOX_CONFIG, "utf8")) as {
       actions?: { job?: string };
@@ -7534,9 +7759,7 @@ test "$package_manager" = "pnpm@12.1.0"
     );
     expect(hydratePnpm.run).toContain('pnpm_install_root="$pnpm_cache_root/install"');
     expect(hydratePnpm.run).toContain('export PNPM_CONFIG_STORE_DIR="$pnpm_cache_root/store"');
-    expect(hydratePnpm.run).toContain(
-      'export PNPM_CONFIG_MODULES_DIR="$pnpm_install_root/node_modules"',
-    );
+    expect(hydratePnpm.run).toContain('export PNPM_CONFIG_MODULES_DIR="$workspace/node_modules"');
     expect(hydratePnpm.run).toContain('export PNPM_CONFIG_PACKAGE_IMPORT_METHOD="hardlink"');
     expect(hydratePnpm.run).toContain(
       'export PNPM_CONFIG_VIRTUAL_STORE_DIR="$pnpm_install_root/virtual-store"',
@@ -7553,7 +7776,7 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(hydratePnpm.run).toContain('} >> "$GITHUB_ENV"');
     expect(hydratePnpm.run).toContain("prepare_crabbox_pnpm_dirs");
     expect(hydratePnpm.run).toContain(
-      'case "${PNPM_CONFIG_MODULES_DIR:?}" in "$pnpm_install_root"/*)',
+      'case "${PNPM_CONFIG_MODULES_DIR:?}" in "$workspace/node_modules")',
     );
     expect(hydratePnpm.run).toContain(
       'case "${PNPM_CONFIG_VIRTUAL_STORE_DIR:?}" in "$pnpm_install_root"/*)',
@@ -7564,10 +7787,10 @@ test "$package_manager" = "pnpm@12.1.0"
       'mkdir -p "$PNPM_CONFIG_MODULES_DIR" "$PNPM_CONFIG_VIRTUAL_STORE_DIR"',
     );
     expect(hydratePnpm.run).toContain(
-      '"$(stat -c %d "$PNPM_CONFIG_STORE_DIR")" != "$(stat -c %d "$PNPM_CONFIG_MODULES_DIR")"',
+      '"$(stat -c %d "$PNPM_CONFIG_STORE_DIR")" != "$(stat -c %d "$PNPM_CONFIG_VIRTUAL_STORE_DIR")"',
     );
     expect(hydratePnpm.run).toContain(
-      "Fallback pnpm store and modules directories must share a filesystem",
+      "Fallback pnpm store and virtual-store directories must share a filesystem",
     );
     expect(hydratePnpm.run).toContain(
       "append_pnpm_option_arg PNPM_CONFIG_PACKAGE_IMPORT_METHOD package-import-method",
@@ -7575,7 +7798,7 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(hydratePnpm.run).toContain("Refusing unsafe pnpm directory");
     expect(hydratePnpm.run).not.toContain('rm -rf -- "${PNPM_CONFIG_MODULES_DIR:?}"');
     expect(hydratePnpm.run).toContain(
-      '[ "$(readlink node_modules)" = "${PNPM_CONFIG_MODULES_DIR:-}" ]',
+      '[ "$(readlink "$PNPM_CONFIG_MODULES_DIR")" != "$pnpm_install_root/node_modules" ]',
     );
     expect(hydratePnpm.run).toContain("pnpm_install_artifacts_ready");
     expect(hydratePnpm.run).toContain("run_pnpm_install || run_pnpm_install");
