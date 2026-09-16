@@ -2714,10 +2714,11 @@ ln -s ../oxfmt/bin/oxfmt "$PNPM_CONFIG_MODULES_DIR/.bin/oxfmt"
   }
   const hydrate = workflowJob(CRABBOX_HYDRATE_WORKFLOW, "hydrate");
   let setup = workflowStep(hydrate, "Setup pnpm and dependencies").run!;
-  for (const [production, fixture] of [
+  const setupPathReplacements: [string, string][] = [
     ["/var/tmp/openclaw-pnpm", installRoot],
     ["/var/cache/crabbox/pnpm/store", join(root, "store")],
-  ]) {
+  ];
+  for (const [production, fixture] of setupPathReplacements) {
     expect(setup.split(production)).toHaveLength(2);
     setup = setup.replace(production, fixture);
     expect(setup).not.toContain(production);
