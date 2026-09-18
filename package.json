@@ -438,7 +438,8 @@
     "!dist/plugin-sdk/media-ffmpeg.d.ts",
     "!dist/plugin-sdk/realtime-voice-playback.d.ts",
     "!dist/plugin-sdk/text-grapheme.d.ts",
-    "!dist/plugin-sdk/agent-harness-session-runtime.d.ts"
+    "!dist/plugin-sdk/agent-harness-session-runtime.d.ts",
+    "!dist/plugin-sdk/agent-harness-attempt-runtime.d.ts"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -1652,6 +1653,9 @@
     "./cli-entry": "./openclaw.mjs",
     "./plugin-sdk/agent-harness-session-runtime": {
       "default": "./dist/plugin-sdk/agent-harness-session-runtime.js"
+    },
+    "./plugin-sdk/agent-harness-attempt-runtime": {
+      "default": "./dist/plugin-sdk/agent-harness-attempt-runtime.js"
     }
   },
   "scripts": {
