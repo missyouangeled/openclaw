@@ -437,7 +437,8 @@
     "!dist/plugin-sdk/worker-task-server.d.ts",
     "!dist/plugin-sdk/media-ffmpeg.d.ts",
     "!dist/plugin-sdk/realtime-voice-playback.d.ts",
-    "!dist/plugin-sdk/text-grapheme.d.ts"
+    "!dist/plugin-sdk/text-grapheme.d.ts",
+    "!dist/plugin-sdk/agent-harness-session-runtime.d.ts"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -1648,7 +1649,10 @@
     "./plugin-sdk/llm": {
       "default": "./dist/plugin-sdk/llm.js"
     },
-    "./cli-entry": "./openclaw.mjs"
+    "./cli-entry": "./openclaw.mjs",
+    "./plugin-sdk/agent-harness-session-runtime": {
+      "default": "./dist/plugin-sdk/agent-harness-session-runtime.js"
+    }
   },
   "scripts": {
     "android:assemble": "node --import ./scripts/tsx.mjs scripts/run-android-gradle.mts :app:assemblePlayDebug :wear:assembleDebug :wear-shared:assembleDebug",
