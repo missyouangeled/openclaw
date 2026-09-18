@@ -225,12 +225,15 @@ function codexCanReproduceRoute(
 function withRuntimePolicy(
   candidate: ProviderModelRouteCandidate,
   sourceBaseUrl: unknown = candidate.baseUrl,
+  modelId?: string,
 ): ProviderModelRouteCandidate {
   return {
     ...candidate,
     runtimePolicy: {
       compatibleIds: codexCanReproduceRoute(candidate, sourceBaseUrl)
-        ? CODEX_RUNTIME_COMPATIBLE_IDS
+        ? candidate.authRequirement === "api-key" && modelId === "gpt-5.5"
+          ? [...CODEX_RUNTIME_COMPATIBLE_IDS, "agentsapi"]
+          : CODEX_RUNTIME_COMPATIBLE_IDS
         : OPENCLAW_RUNTIME_COMPATIBLE_IDS,
     },
   };
@@ -249,7 +252,9 @@ function route(
   candidate: ProviderModelRouteCandidate,
   sourceBaseUrl?: unknown,
 ): ProviderModelRouteResolution & { kind: "routes" } {
-  const compatibleCandidate = withRuntimePolicy(candidate, sourceBaseUrl);
+  const compatibleCandidate = candidate.runtimePolicy
+    ? candidate
+    : withRuntimePolicy(candidate, sourceBaseUrl);
   return {
     kind: "routes",
     routes: [compatibleCandidate],
@@ -420,6 +425,7 @@ function resolveSingleObservedModelRoute(
       requestTransportOverrides,
     },
     sourceBaseUrl,
+    modelId,
   );
   const chatGPTRoute = withRuntimePolicy(
     {
