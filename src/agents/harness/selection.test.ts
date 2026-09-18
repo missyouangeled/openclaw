@@ -2687,7 +2687,7 @@ describe("selectAgentHarness", () => {
       }).modelProvider,
     ).toMatchObject({
       requestTransportOverrides: "none",
-      runtimePolicy: { compatibleIds: ["openclaw", "codex"] },
+      runtimePolicy: { compatibleIds: ["openclaw", "codex", "agentsapi"] },
     });
   });
 
@@ -2818,7 +2818,12 @@ describe("selectAgentHarness", () => {
         }).modelProvider,
       ).toMatchObject({
         requestTransportOverrides: "none",
-        runtimePolicy: { compatibleIds: ["openclaw", "codex"] },
+        runtimePolicy: {
+          compatibleIds:
+            api === "openai-responses"
+              ? ["openclaw", "codex", "agentsapi"]
+              : ["openclaw", "codex"],
+        },
       });
     },
   );
