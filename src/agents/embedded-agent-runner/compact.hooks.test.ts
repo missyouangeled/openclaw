@@ -2794,18 +2794,16 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     expect(resolveAgentHarnessPolicyMock).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "openai", modelId: "fake-model" }),
     );
-    expect(selectAgentHarnessForPreparedModelProvidersMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelProviders: expect.arrayContaining([
-          expect.objectContaining({
-            preparedAuth: expect.objectContaining({ source: "profile" }),
-            runtimePolicy: expect.objectContaining({
-              compatibleIds: ["openclaw", "codex", "agentsapi"],
-            }),
+    expectRecordFields(mockCallArg(selectAgentHarnessForPreparedModelProvidersMock), {
+      modelProviders: expect.arrayContaining([
+        expect.objectContaining({
+          preparedAuth: expect.objectContaining({ source: "profile" }),
+          runtimePolicy: expect.objectContaining({
+            compatibleIds: ["openclaw", "codex", "agentsapi"],
           }),
-        ]),
-      }),
-    );
+        }),
+      ]),
+    });
     expect(mockCallArg(resolveModelMock)).toBe("openai");
     expectRecordFields(mockCallArg(resolveContextWindowInfoMock), {
       provider: "openai",
