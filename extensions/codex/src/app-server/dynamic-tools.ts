@@ -1059,16 +1059,4 @@ function convertToolContent(
     },
   ];
 }
-function readFirstString(record: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return String(value);
-    }
-  }
-  return undefined;
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
