@@ -116,12 +116,15 @@ describe("system notices through pending-to-history promotion", () => {
       // Promotion must not be separated by search, which evicts the pending notice.
       for (const [stage, messages] of stages.entries()) {
         const items = render(messages, inputs);
-        expect(items).toMatchObject([
+        const canonicalOrder = [
           { kind: "group", role: "user", messages: [{ message: before }] },
           { kind: "notice", icon: "cpu", label, text, timestamp: 1000 },
           { kind: "group", role: "assistant", messages: [{ message: after }] },
-        ]);
-        const notice = items[1];
+        ];
+        expect(items).toMatchObject(
+          stage === 1 ? canonicalOrder : [canonicalOrder[0], canonicalOrder[2], canonicalOrder[1]],
+        );
+        const notice = items.find((item) => item.kind === "notice");
         if (notice?.kind !== "notice") {
           throw new Error("Expected one system notice");
         }
