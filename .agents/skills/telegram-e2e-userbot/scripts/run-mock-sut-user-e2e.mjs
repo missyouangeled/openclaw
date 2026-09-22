@@ -1100,7 +1100,11 @@ async function driveWithTelegramProxy(args, repoRoot, creds, leaseHealth) {
         ],
         {
           cwd: repoRoot,
-          env: { ...sanitizeChildEnvironment(driverEnv), OPENCLAW_BUILD_PRIVATE_QA: "1" },
+          env: {
+            ...sanitizeChildEnvironment(driverEnv),
+            OPENCLAW_BUILD_PRIVATE_QA: "1",
+            OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1",
+          },
         },
       );
       await waitForOutput(mock, /QA mock OpenAI:/u, "QA mock OpenAI", 30_000);
