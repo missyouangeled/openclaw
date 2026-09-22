@@ -24,10 +24,18 @@ import type {
 } from "./task-registry.store.types.js";
 import type { TaskDeliveryState, TaskRecord, TaskRuntime } from "./task-registry.types.js";
 
+export type TaskRegistryReadIdentity =
+  | "preserved"
+  | {
+      kind: "creation";
+      taskId: string;
+      runId?: string;
+    };
+
 export type PendingTaskRegistryMutation = {
   scope: TaskRegistryMutationScope;
   readEventTarget?: () => TaskAgentEventTarget | undefined;
-  readIdentity?: "preserved";
+  readIdentity?: TaskRegistryReadIdentity;
   readSettlement?: {
     databaseKey: string;
     store: TaskExecutionRestoreStore;
