@@ -77,7 +77,7 @@ it.each(["rpc", "http", "delta", "message-lookup"] as const)(
         metadataReads.length = 0;
         const read = async () => {
           if (transport === "delta") {
-            const delta = await readSessionHistoryPageInWorker({
+            const { delta } = await readSessionHistoryPageInWorker({
               kind: "delta",
               params: { target: fixture.scope, limits: { maxBytes: 1_000_000, maxEvents: 10 } },
             });
@@ -382,7 +382,7 @@ it("reads a new branch and reset interval after earlier worker pages settle", as
       const scope = { ...target, sessionEntry: entry };
       const limits = { cursor, maxBytes: 1_000_000, maxEvents: 200 };
       const golden = readTranscriptDisplayDelta(scope, limits);
-      const delta = await readSessionHistoryPageInWorker({
+      const { delta } = await readSessionHistoryPageInWorker({
         kind: "delta",
         params: { target: scope, limits },
       });

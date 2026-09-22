@@ -6,10 +6,16 @@ import * as sqliteScope from "../config/sessions/session-accessor.sqlite-scope.j
 import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
+  SessionHistoryDelta,
 } from "../config/sessions/session-history-types.js";
+import {
+  SessionHistoryDeltaPreparationError,
+  sessionHistoryCleanupError,
+} from "../config/sessions/session-history-worker-errors.js";
 import { readSessionHistoryPageInWorker } from "../config/sessions/session-history-worker-runtime.js";
 import type { SessionTranscriptHistoryWorkerInput } from "../config/sessions/session-transcript-worker.types.js";
 import { DEFAULT_WORKER_PENDING_TASKS } from "../infra/worker-task-capacity.js";
+import * as stateContext from "../state/openclaw-state-worker-context.js";
 
 const { runWorker, readerAdmitted } = vi.hoisted(() => ({
   runWorker: vi.fn(),
@@ -279,7 +285,11 @@ it.each(["delta", "message-lookup"] as const)(
     const input = queued[0]!.prepare();
     queued[0]!.result.resolve(
       kind === "delta"
-        ? { kind, delta: { kind: "reset", cursor: "next", reason: "invalid_cursor" } }
+        ? {
+            kind,
+            delta: { kind: "reset", cursor: "next", reason: "invalid_cursor" },
+            subagentCoordination: { sessions: [], runMessages: [] },
+          }
         : { kind, messages: [] },
     );
     await pending;
@@ -298,6 +308,92 @@ it.each(["delta", "message-lookup"] as const)(
     ).not.toHaveProperty("env.UNRELATED_SECRET");
   },
 );
+
+it.each([false, true])(
+  "keeps delta followers and their captured authority separate (deferred error: %s)",
+  async (failed) => {
+    const capture = stateContext.captureOpenClawStateWorkerContext;
+    const assertions: Array<ReturnType<typeof vi.fn>> = [];
+    const context = vi
+      .spyOn(stateContext, "captureOpenClawStateWorkerContext")
+      .mockImplementation((...args) => {
+        const bound = capture(...args);
+        const assertCurrent = vi.fn(bound.admission.assertCurrent);
+        assertions.push(assertCurrent);
+        return { ...bound, admission: { ...bound.admission, assertCurrent } };
+      });
+    try {
+      const rpc = request().params;
+      const deltaRequest: Extract<SessionHistoryWorkerRequest, { kind: "delta" }> = {
+        kind: "delta",
+        params: {
+          target: {
+            agentId: rpc.sessionAgentId,
+            sessionId: rpc.sessionId,
+            sessionKey: rpc.canonicalKey,
+            sessionEntry: rpc.entry,
+            storePath: rpc.storePath,
+          },
+          limits: { maxEvents: 200, maxBytes: 1_000_000 },
+        },
+      };
+      const first = readSessionHistoryPageInWorker(deltaRequest);
+      const second = readSessionHistoryPageInWorker(deltaRequest);
+      await waitForReaderAdmission(2);
+      expect(queued).toHaveLength(1);
+      const partial: SessionHistoryDelta = {
+        delta: { kind: "missing" },
+        subagentCoordination: { sessions: [["source", false]], runMessages: [] },
+      };
+      queued[0]!.prepare();
+      if (failed) {
+        queued[0]!.result.reject(new SessionHistoryDeltaPreparationError(partial));
+      } else {
+        queued[0]!.result.resolve({ kind: "delta", ...partial });
+      }
+      const [a, b] = await Promise.all([first, second]);
+      a.subagentCoordination.sessions[0]![1] = true;
+      expect(b.subagentCoordination.sessions[0]![1]).toBe(false);
+      assertions[0]!.mockImplementation(() => {
+        throw new Error("original source revoked");
+      });
+      expect(a.assertCurrent).toThrow("original source revoked");
+      expect(b.assertCurrent).not.toThrow();
+    } finally {
+      context.mockRestore();
+    }
+  },
+);
+
+it("does not recover partial delta facts when worker retirement fails", async () => {
+  const rpc = request().params;
+  const pending = readSessionHistoryPageInWorker({
+    kind: "delta",
+    params: {
+      target: {
+        agentId: rpc.sessionAgentId,
+        sessionId: rpc.sessionId,
+        sessionKey: rpc.canonicalKey,
+        storePath: rpc.storePath,
+        sessionEntry: rpc.entry,
+      },
+      limits: {},
+    },
+  });
+  const failure = sessionHistoryCleanupError(
+    new SessionHistoryDeltaPreparationError({
+      delta: { kind: "missing" },
+      subagentCoordination: { sessions: [], runMessages: [] },
+    }),
+    new Error("retirement failed"),
+    "worker retirement",
+  );
+  const rejected = expect(pending).rejects.toBe(failure);
+  await waitForReaderAdmission(1);
+  queued[0]!.prepare();
+  queued[0]!.result.reject(failure);
+  await rejected;
+});
 
 it("shares queued equivalent pages but starts a fresh read after dispatch", async () => {
   const first = readSessionHistoryPageInWorker(request());

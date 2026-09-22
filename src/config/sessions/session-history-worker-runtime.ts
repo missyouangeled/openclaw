@@ -12,7 +12,6 @@ import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.pa
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { getRuntimeConfig } from "../config.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.js";
-import type { SessionTranscriptDisplayDeltaResult } from "./session-accessor.sqlite-history-query.js";
 import {
   prepareSqliteTranscriptReadScope,
   resolveSqliteScope,
@@ -23,10 +22,12 @@ import { prepareSessionTranscriptReadTargetCore } from "./session-accessor.trans
 import { readRestoredSessionTranscript } from "./session-cold-storage-read.js";
 import type {
   ChatHistoryPage,
+  SessionHistoryDelta,
   SessionHistorySnapshot,
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
 } from "./session-history-types.js";
+import { SessionHistoryDeltaPreparationError } from "./session-history-worker-errors.js";
 import { isSessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { resolveSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
@@ -47,6 +48,7 @@ type QueuedHistoryRead = {
   promise: Promise<ForegroundHistoryResult>;
   remainingReaders: number;
 };
+type AdmittedSessionHistoryDelta = SessionHistoryDelta & { assertCurrent: () => void };
 const queuedHistoryReads = new Map<string, QueuedHistoryRead>();
 let pendingHistoryReaders = 0;
 let pendingHistoryBytes = 0;
@@ -56,12 +58,24 @@ function receivePage(
   signal?: AbortSignal,
 ): Promise<ForegroundHistoryResult> {
   queued.remainingReaders++;
-  return queued.promise.then((page) => {
-    queued.remainingReaders--;
-    signal?.throwIfAborted();
-    // Dispatch closes the group; the final receiver owns the original after earlier clones finish.
-    return queued.remainingReaders === 0 ? page : structuredClone(page);
-  });
+  return queued.promise.then(
+    (page) => {
+      queued.remainingReaders--;
+      signal?.throwIfAborted();
+      // Dispatch closes the group; the final receiver owns the original after earlier clones finish.
+      return queued.remainingReaders === 0 ? page : structuredClone(page);
+    },
+    (error: unknown) => {
+      queued.remainingReaders--;
+      if (error instanceof SessionHistoryDeltaPreparationError) {
+        signal?.throwIfAborted();
+        if (queued.remainingReaders > 0) {
+          throw new SessionHistoryDeltaPreparationError(structuredClone(error.partial));
+        }
+      }
+      throw error;
+    },
+  );
 }
 
 function readQueuedHistory(
@@ -180,7 +194,7 @@ export function readSessionHistoryPageInWorker(
 export function readSessionHistoryPageInWorker(
   request: Extract<SessionHistoryWorkerRequest, { kind: "delta" }>,
   signal?: AbortSignal,
-): Promise<SessionTranscriptDisplayDeltaResult>;
+): Promise<AdmittedSessionHistoryDelta>;
 export function readSessionHistoryPageInWorker(
   request: Extract<SessionHistoryWorkerRequest, { kind: "message-lookup" }>,
   signal?: AbortSignal,
@@ -188,9 +202,7 @@ export function readSessionHistoryPageInWorker(
 export async function readSessionHistoryPageInWorker(
   request: SessionHistoryWorkerRequest,
   signal?: AbortSignal,
-): Promise<
-  ChatHistoryPage | SessionHistorySnapshot | SessionTranscriptDisplayDeltaResult | unknown[]
-> {
+): Promise<ChatHistoryPage | SessionHistorySnapshot | AdmittedSessionHistoryDelta | unknown[]> {
   signal?.throwIfAborted();
   const capturedRequest = captureHistoryRequest(request);
   const scope: SessionTranscriptReadScope =
@@ -299,47 +311,75 @@ export async function readSessionHistoryPageInWorker(
     pendingHistoryBytes += additionalBytes;
     inputBytes += additionalBytes;
     const preparedTarget = resolved;
-    const result = await withSessionHistoryWorkerDatabase(databaseOptions, (owner) => {
+    const acquired = await withSessionHistoryWorkerDatabase(databaseOptions, async (owner) => {
       const assertCurrent = () => {
         assertStateCurrent();
         owner.assertCurrent();
       };
-      return readRestoredSessionTranscript(
-        capturedScope,
-        async () => {
-          assertCurrent();
-          const page = await readQueuedHistory(input, `${owner.generation}:${key}`, owner, signal);
-          if (page.kind === "cold-metadata") {
-            throw new Error("Session history worker returned cold metadata instead of history");
-          }
-          return page;
-        },
-        {
-          assertCurrent,
-          coldRead: {
-            target: preparedTarget,
-            readMetadata: async (phase) => {
-              assertCurrent();
-              const metadata =
-                phase === "initial"
-                  ? await readQueuedHistory(
-                      metadataInput,
-                      `${owner.generation}:${metadataKey}`,
-                      owner,
-                      signal,
-                    )
-                  : await owner.readColdMetadata({ sessionId: metadataInput.sessionId, env });
-              assertCurrent();
-              if (metadata.kind !== "cold-metadata") {
-                throw new Error("Session history worker returned history instead of cold metadata");
-              }
-              return metadata.archive;
+      let result: SessionHistoryWorkerResult;
+      try {
+        result = await readRestoredSessionTranscript(
+          capturedScope,
+          async () => {
+            assertCurrent();
+            const page = await readQueuedHistory(
+              input,
+              `${owner.generation}:${key}`,
+              owner,
+              signal,
+            );
+            if (page.kind === "cold-metadata") {
+              throw new Error("Session history worker returned cold metadata instead of history");
+            }
+            return page;
+          },
+          {
+            assertCurrent,
+            coldRead: {
+              target: preparedTarget,
+              readMetadata: async (phase) => {
+                assertCurrent();
+                const metadata =
+                  phase === "initial"
+                    ? await readQueuedHistory(
+                        metadataInput,
+                        `${owner.generation}:${metadataKey}`,
+                        owner,
+                        signal,
+                      )
+                    : await owner.readColdMetadata({ sessionId: metadataInput.sessionId, env });
+                assertCurrent();
+                if (metadata.kind !== "cold-metadata") {
+                  throw new Error(
+                    "Session history worker returned history instead of cold metadata",
+                  );
+                }
+                return metadata.archive;
+              },
             },
           },
-        },
-      );
+        );
+      } catch (error) {
+        if (
+          error instanceof SessionHistoryDeltaPreparationError &&
+          capturedRequest.kind === "delta"
+        ) {
+          // Failed execution/retirement has joined. Recover inside the retained
+          // scope so primary revocation and release failures still refuse it.
+          owner.assertCurrent();
+          result = { kind: "delta", ...error.partial };
+        } else {
+          throw error;
+        }
+      }
+      return { result, assertCurrent: owner.assertCurrent };
     });
-    assertStateCurrent();
+    const assertCurrent = () => {
+      acquired.assertCurrent();
+      assertStateCurrent();
+    };
+    assertCurrent();
+    const result = acquired.result;
     if (result.kind !== capturedRequest.kind) {
       throw new Error("Session history worker returned the wrong page type");
     }
@@ -348,7 +388,7 @@ export async function readSessionHistoryPageInWorker(
       : result.kind === "http"
         ? result.snapshot
         : result.kind === "delta"
-          ? result.delta
+          ? { ...result, assertCurrent }
           : result.messages;
   } catch (error) {
     if (resolved && isSessionTranscriptProjectionUnavailableError(error)) {
