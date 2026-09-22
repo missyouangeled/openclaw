@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChatPendingInputsPage } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
+import { coalesceAgentRunFrames } from "./chat-agent-run-grouping.ts";
 import { buildCachedChatItems, resetChatThreadState } from "./chat-thread.ts";
 
 const clients = [{ id: "cli", mode: "cli", displayName: "Release helper" }];
@@ -102,7 +103,12 @@ describe("system notices through pending-to-history promotion", () => {
       };
       const inputs = pending(message);
       const before = { role: "user", content: "before", timestamp: 999 };
-      const after = { role: "assistant", content: "after", timestamp: 1001 };
+      const after = {
+        role: "assistant",
+        content: "after",
+        timestamp: 1001,
+        __openclaw: { runId: "run" },
+      };
       const stages = [
         [before, after],
         [before, message, after],
@@ -121,6 +127,13 @@ describe("system notices through pending-to-history promotion", () => {
         }
         expect(notice.startsTurn).toBe(midTurn ? undefined : true);
         expect(notice.collapsedBody).toBe(midTurn ? true : undefined);
+        expect(
+          coalesceAgentRunFrames(items).filter((item) => item.kind === "agent-run-frame"),
+        ).toMatchObject(
+          stage === 1 && !midTurn
+            ? [{ runId: "run", boundaryId: "send:run", parts: [items[2]] }]
+            : [],
+        );
         expect(notice.boundaryId).toBe(stage === 1 && !imported ? "send:run" : undefined);
       }
       for (const messages of stages) {
