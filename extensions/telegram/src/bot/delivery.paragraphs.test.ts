@@ -24,7 +24,10 @@ describe("Telegram reply paragraph delivery", () => {
     const code = fixture.requests
       .filter(({ method }) => method === "sendMessage")
       .map(({ fields }) => {
-        const html = String(fields.text ?? "");
+        if (typeof fields.text !== "string") {
+          throw new Error("Expected a string Telegram sendMessage text");
+        }
+        const html = fields.text;
         expect(html.length).toBeLessThanOrEqual(256);
         expect(fields.parse_mode).toBe("HTML");
         expect(html).toMatch(/^<pre><code>[\s\S]+<\/code><\/pre>$/u);

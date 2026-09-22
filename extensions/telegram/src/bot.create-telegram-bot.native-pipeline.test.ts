@@ -843,6 +843,8 @@ describe("createTelegramBot typed command pipeline", () => {
       },
     });
     const cfg: OpenClawConfig = {
+      // Keep this controlled image-model fixture out of unrelated provider discovery.
+      plugins: { allow: ["telegram", "openai"] },
       agents: { defaults: { model: "openai/text-model", imageModel: "openai/sticker-model" } },
       models: {
         providers: {
@@ -910,7 +912,12 @@ describe("createTelegramBot typed command pipeline", () => {
         expect(response.status).toBe(200);
       };
       const receiving = receive({ update_id: 2800, message });
-      await describeStarted.promise;
+      await Promise.race([
+        describeStarted.promise,
+        receiving.then(() => {
+          throw new Error("Sticker webhook completed before description started");
+        }),
+      ]);
       expect(harness.replySpy).not.toHaveBeenCalled();
       description.resolve({ text: "A curious sticker" });
       await receiving;

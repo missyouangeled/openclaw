@@ -4,6 +4,11 @@ import { AbortController as TelegramAbortController } from "abort-controller";
 import { Bot } from "grammy";
 import { projectAgentToolActivity } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import {
+  registerSessionBindingAdapter,
+  unregisterSessionBindingAdapter,
+  type SessionBindingAdapter,
+} from "openclaw/plugin-sdk/conversation-runtime";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import {
   createTestRegistry,
@@ -52,6 +57,7 @@ export function createTelegramDispatchHttpFixture() {
   let stopped: Promise<never>;
   let stop: (error: Error) => void;
   const pendingDispatches = new Set<Promise<unknown>>();
+  const bindingAdapters = new Map<string, SessionBindingAdapter>();
   const pendingRequests = new Set<Promise<unknown>>();
   type Rejection = { error_code: number; description: string } | "no-message-id" | undefined;
   let respondToCall: ((call: RecordedBotApiCall) => Rejection | Promise<Rejection>) | undefined;
@@ -278,6 +284,10 @@ export function createTelegramDispatchHttpFixture() {
     await Promise.allSettled(pendingDispatches);
     await Promise.allSettled([...pendingRequests, typingSend]);
     await settleDetachedDeletes();
+    for (const adapter of bindingAdapters.values()) {
+      unregisterSessionBindingAdapter({ ...adapter, adapter });
+    }
+    bindingAdapters.clear();
     resetTelegramAccountThrottlersForTest();
     vi.useRealTimers();
     resetPluginRuntimeStateForTest();
@@ -471,6 +481,20 @@ export function createTelegramDispatchHttpFixture() {
         context.accountId = scenario.accountId;
         context.route.accountId = scenario.accountId;
         context.ctxPayload.AccountId = scenario.accountId;
+      }
+
+      // This delivery fixture starts below createTelegramBot, which normally owns
+      // the account adapter even when thread bindings are disabled.
+      if (!bindingAdapters.has(context.accountId)) {
+        const adapter: SessionBindingAdapter = {
+          channel: "telegram",
+          accountId: context.accountId,
+          capabilities: { bindSupported: false, unbindSupported: false, placements: [] },
+          listBySession: () => [],
+          resolveByConversation: () => null,
+        };
+        registerSessionBindingAdapter(adapter);
+        bindingAdapters.set(context.accountId, adapter);
       }
 
       const result = await dispatchTelegramMessage({

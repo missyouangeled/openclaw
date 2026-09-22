@@ -1,10 +1,11 @@
 // Telegram tests cover accounts plugin behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { readConfigFileSnapshotForWrite } from "openclaw/plugin-sdk/config-mutation";
 import { withEnv, withTempHome } from "openclaw/plugin-sdk/test-env";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   listEnabledTelegramAccounts,
   listTelegramAccountIds,
@@ -14,6 +15,8 @@ import {
 } from "./accounts.js";
 import { normalizeAllowFrom } from "./bot-access.js";
 import { isTelegramDmAccessAllowed } from "./dm-access.js";
+import { setTelegramRuntime } from "./runtime.js";
+import { clearTelegramRuntimeForTest } from "./runtime.test-support.js";
 
 function resolveAccountWithEnv(
   env: Record<string, string>,
@@ -212,6 +215,7 @@ describe("resolveDefaultTelegramAccountId", () => {
 });
 
 describe("mergeTelegramAccountConfig", () => {
+  afterEach(clearTelegramRuntimeForTest);
   it("drops account wildcard DM access when top-level allowFrom is restrictive", async () => {
     const cfg: OpenClawConfig = {
       channels: {
@@ -231,6 +235,7 @@ describe("mergeTelegramAccountConfig", () => {
       },
     };
 
+    setTelegramRuntime(createPluginRuntimeMock());
     const merged = mergeTelegramAccountConfig(cfg, "alerts");
     expect(merged.botToken).toBe("bot-token");
     expect(merged.dmPolicy).toBe("open");

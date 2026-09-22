@@ -36,7 +36,10 @@ describe("Telegram paragraph delivery", () => {
       .filter(({ method }) => method === "sendMessage")
       .map(({ fields }) => {
         expect(fields.parse_mode).toBe("HTML");
-        return String(fields.text ?? "");
+        if (typeof fields.text !== "string") {
+          throw new Error("Expected a string Telegram sendMessage text");
+        }
+        return fields.text;
       });
     const code = chunks.map((html) => {
       expect(html.length).toBeLessThanOrEqual(256);
