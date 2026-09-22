@@ -1348,9 +1348,11 @@ authority through queue waits and its native commit, so a revoked read cannot
 restore rows after database cleanup. These lifetimes change no schema or
 migration requirement.
 
-RPC and HTTP history pages, cursor deltas, and exact message lookups prepare their
+RPC and HTTP history pages, cursor deltas, recent messages, and exact message lookups prepare their
 physical target asynchronously and read cold-archive metadata through that same
-retained history worker. Initial metadata
+retained history worker only after a typed cold read requires restoration. Hot
+reads keep the atomic reader's existing cold check without a metadata preflight.
+Initial metadata
 probes share only in-flight work; every queued restoration rereads the metadata
 after earlier cold operations settle. The existing restoration owner still
 verifies and materializes the archive and retains the 24-hour hot-history cooldown.

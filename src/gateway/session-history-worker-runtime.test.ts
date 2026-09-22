@@ -249,7 +249,7 @@ it.each(["rpc", "http"] as const)(
   },
 );
 
-it.each(["delta", "message-lookup"] as const)(
+it.each(["delta", "message-lookup", "recent"] as const)(
   "captures %s selectors and target before asynchronous dispatch",
   async (kind) => {
     const target = {
@@ -266,7 +266,12 @@ it.each(["delta", "message-lookup"] as const)(
             kind,
             params: { target, limits: { cursor: "original", maxBytes: 8000, maxEvents: 10 } },
           }
-        : { kind, params: { target, messageId: "original" } };
+        : kind === "recent"
+          ? {
+              kind,
+              params: { target, maxMessages: 10, maxLines: 220, allowResetArchiveFallback: true },
+            }
+          : { kind, params: { target, messageId: "original" } };
     const expected = structuredClone(supplied);
     const pending =
       supplied.kind === "delta"
@@ -278,6 +283,10 @@ it.each(["delta", "message-lookup"] as const)(
     if (supplied.kind === "delta") {
       supplied.params.limits.cursor = "successor";
       supplied.params.limits.maxEvents = 1;
+    } else if (supplied.kind === "recent") {
+      supplied.params.maxMessages = 1;
+      supplied.params.maxLines = 2;
+      supplied.params.allowResetArchiveFallback = false;
     } else {
       supplied.params.messageId = "successor";
     }

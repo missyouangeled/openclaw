@@ -120,13 +120,24 @@ function readQueuedHistory(
 }
 
 function captureHistoryRequest(request: SessionHistoryWorkerRequest): SessionHistoryWorkerRequest {
-  if (request.kind === "delta" || request.kind === "message-lookup") {
+  if (request.kind === "delta" || request.kind === "message-lookup" || request.kind === "recent") {
     const target = request.params.target;
     const capturedTarget = {
       ...target,
       sessionEntry: target.sessionEntry ? { sessionId: target.sessionEntry.sessionId } : undefined,
       ...(target.env ? { env: captureSessionTranscriptStorageEnvironment(target.env) } : {}),
     };
+    if (request.kind === "recent") {
+      return {
+        kind: "recent",
+        params: {
+          target: capturedTarget,
+          maxMessages: request.params.maxMessages,
+          maxLines: request.params.maxLines,
+          allowResetArchiveFallback: request.params.allowResetArchiveFallback,
+        },
+      };
+    }
     return request.kind === "delta"
       ? { kind: "delta", params: { target: capturedTarget, limits: { ...request.params.limits } } }
       : {
@@ -196,7 +207,7 @@ export function readSessionHistoryPageInWorker(
   signal?: AbortSignal,
 ): Promise<AdmittedSessionHistoryDelta>;
 export function readSessionHistoryPageInWorker(
-  request: Extract<SessionHistoryWorkerRequest, { kind: "message-lookup" }>,
+  request: Extract<SessionHistoryWorkerRequest, { kind: "message-lookup" | "recent" }>,
   signal?: AbortSignal,
 ): Promise<unknown[]>;
 export async function readSessionHistoryPageInWorker(

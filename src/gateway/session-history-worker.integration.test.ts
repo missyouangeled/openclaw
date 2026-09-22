@@ -30,7 +30,7 @@ import { readChatHistoryMessageId } from "./session-history-tail.js";
 import { readSessionPreviewItemsFromTranscriptAsync } from "./session-transcript-preview.js";
 import { readSessionMessagesMatchingIdAsync } from "./session-transcript-readers.js";
 
-it.each(["rpc", "http", "delta", "message-lookup"] as const)(
+it.each(["rpc", "http", "delta", "message-lookup", "recent"] as const)(
   "restores %s history without reading cold metadata on the caller",
   async (transport) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
@@ -88,6 +88,19 @@ it.each(["rpc", "http", "delta", "message-lookup"] as const)(
                   return eventRecord?.type === "message" ? [eventRecord.id] : [];
                 })
               : [];
+          }
+          if (transport === "recent") {
+            return (
+              await readSessionHistoryPageInWorker({
+                kind: "recent",
+                params: {
+                  target: fixture.scope,
+                  maxMessages: 10,
+                  maxLines: 220,
+                  allowResetArchiveFallback: true,
+                },
+              })
+            ).map(readChatHistoryMessageId);
           }
           if (transport === "message-lookup") {
             return (
