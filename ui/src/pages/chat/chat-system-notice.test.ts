@@ -103,8 +103,12 @@ describe("system notices through pending-to-history promotion", () => {
       const inputs = pending(message);
       const before = { role: "user", content: "before", timestamp: 999 };
       const after = { role: "assistant", content: "after", timestamp: 1001 };
-      for (const consumed of [false, true]) {
-        const messages = [before, ...(consumed ? [message] : []), after];
+      const stages = [
+        [before, after],
+        [before, message, after],
+      ];
+      // Promotion must not be separated by search, which evicts the pending notice.
+      for (const [stage, messages] of stages.entries()) {
         const items = render(messages, inputs);
         expect(items).toMatchObject([
           { kind: "group", role: "user", messages: [{ message: before }] },
@@ -117,7 +121,9 @@ describe("system notices through pending-to-history promotion", () => {
         }
         expect(notice.startsTurn).toBe(midTurn ? undefined : true);
         expect(notice.collapsedBody).toBe(midTurn ? true : undefined);
-        expect(notice.boundaryId).toBe(consumed && !imported ? "send:run" : undefined);
+        expect(notice.boundaryId).toBe(stage === 1 && !imported ? "send:run" : undefined);
+      }
+      for (const messages of stages) {
         expect(render(messages, inputs, "after")).toMatchObject([
           { kind: "group", role: "assistant", messages: [{ message: after }] },
         ]);
