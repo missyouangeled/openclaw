@@ -159,6 +159,34 @@ test("rejects only the selected matching request before forwarding and then resu
   );
 });
 
+test("forwards file downloads before, during, and after a one-shot rejection", async (t) => {
+  const upstreamPaths = [];
+  const proxy = await startTelegramTestApiProxy({
+    fetchImpl: async (url) => {
+      upstreamPaths.push(new URL(url).pathname);
+      return new Response("synthetic-file-bytes", { status: 200 });
+    },
+  });
+  t.after(() => proxy.close());
+  const filePath = "/file/bot123:ABC/photos/current.jpg";
+  const download = async () => {
+    const response = await fetch(`${proxy.apiRoot}${filePath}`);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "synthetic-file-bytes");
+  };
+
+  await download();
+  proxy.rejectNextRequest({ method: "sendMessage" });
+  await download();
+  const rejected = await fetch(`${proxy.apiRoot}/bot123:ABC/sendMessage`, {
+    method: "POST",
+    body: "{}",
+  });
+  assert.equal(rejected.status, 400);
+  await download();
+  assert.deepEqual(upstreamPaths, Array(3).fill("/file/bot123:ABC/test/photos/current.jpg"));
+  assert.equal(proxy.getRequestRejectionEvents().length, 1);
+});
 test("proxy close aborts the in-flight Test Server request", async () => {
   let upstreamStarted;
   let upstreamAborted = false;

@@ -152,7 +152,7 @@ export async function startTelegramTestApiProxy({
       const hasBody = request.method !== "GET" && request.method !== "HEAD";
       let body = hasBody ? request : undefined;
       const rejection = requestRejection;
-      if (rejection?.method === method) {
+      if (rejection && rejection.method === method) {
         if (rejection.bodyIncludes !== undefined && hasBody) {
           const chunks = [];
           for await (const chunk of request) chunks.push(Buffer.from(chunk));
