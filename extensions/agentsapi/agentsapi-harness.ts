@@ -9,9 +9,16 @@ import {
 import {
   abortAndDrainAgentHarnessRun,
   agentHarnessAttemptTerminal,
+  awaitAgentEndSideEffects,
+  buildAgentHookContextChannelFields,
+  buildEmbeddedForegroundPromptContext,
   clearActiveEmbeddedRun,
   embeddedAgentLog,
+  formatErrorMessage,
   AgentHarnessSessionSupersededError,
+  resolveAgentDir,
+  runAgentEndSideEffects,
+  runAgentHarnessLlmOutputHook,
   setActiveEmbeddedRun,
   type AgentHarnessAttemptParamsV2,
   type AgentHarnessAttemptResult,
@@ -324,7 +331,7 @@ async function runAgentsApiSession(
     clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, params.sessionFile);
     lifecycle.emitLifecycleTerminal({ phase: terminal.kind === "failed" ? "error" : "end" });
   }
-  return {
+  const result: AgentHarnessAttemptResult = {
     terminal,
     sessionIdUsed: params.sessionId,
     sessionFileUsed: params.sessionFile,
@@ -356,6 +363,67 @@ async function runAgentsApiSession(
     },
     itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
   };
+  assertHarnessCurrent();
+  const contextWindow = {
+    contextTokenBudget: params.contextWindowInfo?.tokens ?? params.contextTokenBudget,
+    contextWindowSource: params.contextWindowInfo?.source,
+    contextWindowReferenceTokens: params.contextWindowInfo?.referenceTokens,
+  };
+  const hookContext = {
+    runId: params.runId,
+    agentId: target.agentId,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+    workspaceDir: params.workspaceDir,
+    modelProviderId: params.provider,
+    modelId: params.model.id,
+    trigger: params.trigger,
+    inputProvenance: params.inputProvenance,
+    ...buildAgentHookContextChannelFields(params),
+    channelContext: params.channelContext,
+    ...contextWindow,
+  };
+  runAgentHarnessLlmOutputHook({
+    event: {
+      runId: params.runId,
+      sessionId: params.sessionId,
+      provider: params.provider,
+      model: params.model.id,
+      resolvedRef: `${params.provider}/${params.model.id}`,
+      harnessId: "agentsapi",
+      prompt: params.prompt,
+      ...contextWindow,
+      assistantTexts: result.assistantTexts,
+      lastAssistant: result.lastAssistant,
+      usage: result.attemptUsage,
+    },
+    ctx: hookContext,
+  });
+  const agentEnd = {
+    event: {
+      runId: params.runId,
+      messages: result.messagesSnapshot,
+      success: terminal.kind === "ok",
+      error: terminal.kind === "failed" ? formatErrorMessage(terminal.error) : undefined,
+      durationMs: Date.now() - startedAtMs,
+    },
+    ctx: {
+      ...hookContext,
+      config: params.config,
+      foregroundPromptContext: buildEmbeddedForegroundPromptContext(
+        { ...params, agentId: target.agentId },
+        params.agentDir ?? resolveAgentDir(params.config ?? {}, target.agentId),
+      ),
+      skillWorkshopAvailable: false,
+      compacted: false,
+    },
+  };
+  if (!params.messageChannel && !params.messageProvider) {
+    await awaitAgentEndSideEffects(agentEnd);
+  } else {
+    runAgentEndSideEffects(agentEnd);
+  }
+  return result;
 }
 
 function validateAgentsApiInput(params: AgentHarnessAttemptParamsV2) {
