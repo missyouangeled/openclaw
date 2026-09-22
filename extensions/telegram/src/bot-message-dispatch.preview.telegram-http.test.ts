@@ -534,6 +534,7 @@ describe("Telegram preview and presentation delivery through HTTP", () => {
     async (accepted) => {
       const partial = accepted ? "An accepted partial answer before the model failed." : "partial";
       let reachedModel = false;
+      let visibleBeforeFailure: string[] | undefined;
       await dispatchProgressTurn(
         async (options) => {
           reachedModel = true;
@@ -543,14 +544,16 @@ describe("Telegram preview and presentation delivery through HTTP", () => {
               (call) => call.method === "sendMessage" && call.fields.text === partial,
             );
           }
+          visibleBeforeFailure = [...visibleMessages.values()];
           options?.onAgentRunTerminalOutcome?.("failed");
           throw new Error("private-provider-failure");
         },
-        { mode: "partial", toolProgress: false, allowErrors: true },
+        { mode: "partial", toolProgress: false },
       );
       expect(reachedModel).toBe(true);
+      expect(visibleBeforeFailure).toEqual(accepted ? [partial] : []);
       const visible = [...visibleMessages.values()];
-      expect(visible).toHaveLength(1);
+      expect(visible, JSON.stringify({ calls, acceptedCalls })).toHaveLength(1);
       expect(visible[0]).toContain("Please try again");
       if (accepted) {
         expect(visible[0]).toContain(partial);
