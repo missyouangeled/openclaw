@@ -1,131 +1,141 @@
-/* @vitest-environment jsdom */
+// @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChatPendingInputsPage } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
-import { buildPendingInputItems } from "./chat-pending-inputs.ts";
-import { buildChatItems } from "./chat-thread-build.ts";
-import { resetChatThreadState } from "./chat-thread.ts";
+import { buildCachedChatItems, resetChatThreadState } from "./chat-thread.ts";
 
-const sessionKey = "agent:main:system-notices";
-const input: ChatPendingInputsPage["items"][number] = {
-  id: "input-1",
-  runId: "run-queued",
-  acceptedAt: 100,
-  state: "queued",
-  message: { role: "user", content: "Keep my accepted input", timestamp: 100 },
+const clients = [{ id: "cli", mode: "cli", displayName: "Release helper" }];
+const baseMessage = {
+  role: "user",
+  content: "[System] Continue the interrupted turn.",
+  timestamp: 1000,
+  __openclaw: { id: "input-1", seq: 2, idempotencyKey: "run:user", transport: { clients } },
 };
+
+function pending(message: object): ChatPendingInputsPage["items"] {
+  return [
+    {
+      id: "input-1",
+      runId: "run",
+      acceptedAt: 1000,
+      state: "queued",
+      message: { ...message, __openclaw: { id: "pending:input-1", transport: { clients } } },
+    },
+  ];
+}
+
+function render(
+  messages: unknown[],
+  pendingInputs: ChatPendingInputsPage["items"],
+  searchQuery = "",
+) {
+  return buildCachedChatItems({
+    paneId: "notices",
+    sessionKey: "main",
+    messages,
+    pendingInputs,
+    toolMessages: [],
+    streamSegments: [],
+    stream: null,
+    streamStartedAt: null,
+    showToolCalls: true,
+    searchOpen: Boolean(searchQuery),
+    searchQuery,
+  });
+}
 
 afterEach(() => resetChatThreadState());
 
-describe("system-notice projection across input promotion", () => {
+describe("system notices through pending-to-history promotion", () => {
   it.each([
-    {
-      sourceTool: "main_session_restart_recovery",
-      label: "System · restart recovery",
-      startsTurn: true,
-    },
-    {
-      sourceTool: "cli_harness_context",
-      label: "System · injected context",
-      startsTurn: undefined,
-    },
-    { sourceTool: "unknown_system_source", label: "System", startsTurn: true },
-  ])(
-    "projects pending $sourceTool with the history notice contract",
-    ({ sourceTool, label, startsTurn }) => {
-      const items = buildPendingInputItems([
-        {
-          ...input,
-          state: "queued",
-          message: {
-            role: "user",
-            timestamp: 100,
-            content: "[System] Resume safely.",
-            provenance: { kind: "internal_system", sourceTool },
-          },
-        },
-      ]);
-      expect(items).toEqual([expect.objectContaining({ kind: "notice", label })]);
-      expect(items[0]).toHaveProperty("timestamp", 100);
-      expect(items[0]).toEqual(expect.not.objectContaining({ kind: "message" }));
-      if (items[0]?.kind === "notice") {
-        expect(items[0].startsTurn).toBe(startsTurn);
-        expect(items[0].collapsedBody).toBe(
-          sourceTool === "cli_harness_context" ? true : undefined,
-        );
-        expect(items[0].text).toBe(
+    [
+      "main_session_restart_recovery",
+      "System · restart recovery",
+      "Turn interrupted by a gateway restart — asked the agent to resume and finish the response.",
+      false,
+    ],
+    [
+      "restart-sentinel",
+      "System · gateway restarted",
+      "Gateway restarted during update 2026.8.2 -> 2026.8.3.",
+      false,
+    ],
+    [
+      "cli_harness_context",
+      "System · injected context",
+      "Base directory for this skill: /tmp/skills/autoreview\n\n# Auto Review",
+      true,
+    ],
+    [
+      "claude_cli_task_notification",
+      "System · background task",
+      "<task-notification>\n<status>completed</status>\n</task-notification>",
+      true,
+    ],
+    ...[
+      undefined,
+      "session-companion",
+      "heartbeat",
+      "main-session-restart-recovery",
+      "restart_sentinel",
+      " restart-sentinel ",
+    ].map((sourceTool) => [sourceTool, "System", "Keep the raw fallback copy.", false] as const),
+  ] as const)(
+    "preserves %s presentation, search and turn boundaries",
+    (sourceTool, label, text, midTurn) => {
+      const imported = sourceTool === "cli_harness_context";
+      const message = {
+        ...baseMessage,
+        content:
           sourceTool === "main_session_restart_recovery"
-            ? "Turn interrupted by a gateway restart — asked the agent to resume and finish the response."
-            : "Resume safely.",
-        );
+            ? baseMessage.content
+            : (midTurn ? "" : "[System] ") + text,
+        provenance: { kind: "internal_system", sourceTool },
+        __openclaw: imported
+          ? {
+              id: "input-1",
+              importedFrom: "claude-cli",
+              cliSessionId: "cli-1",
+              externalId: "input-1",
+              transport: { clients },
+            }
+          : baseMessage["__openclaw"],
+      };
+      const inputs = pending(message);
+      const before = { role: "user", content: "before", timestamp: 999 };
+      const after = { role: "assistant", content: "after", timestamp: 1001 };
+      for (const consumed of [false, true]) {
+        const messages = [before, ...(consumed ? [message] : []), after];
+        const items = render(messages, inputs);
+        expect(items).toMatchObject([
+          { kind: "group", role: "user", messages: [{ message: before }] },
+          { kind: "notice", icon: "cpu", label, text, timestamp: 1000 },
+          { kind: "group", role: "assistant", messages: [{ message: after }] },
+        ]);
+        const notice = items[1];
+        if (notice?.kind !== "notice") {
+          throw new Error("Expected one system notice");
+        }
+        expect(notice.startsTurn).toBe(midTurn ? undefined : true);
+        expect(notice.collapsedBody).toBe(midTurn ? true : undefined);
+        expect(notice.boundaryId).toBe(consumed && !imported ? "send:run" : undefined);
+        expect(render(messages, inputs, "after")).toMatchObject([
+          { kind: "group", role: "assistant", messages: [{ message: after }] },
+        ]);
       }
     },
   );
 
-  it("does not turn a user's System prefix into system provenance", () => {
-    const message = { role: "user", content: "[System] My quoted example" };
-    expect(buildPendingInputItems([{ ...input, state: "queued", message }])).toEqual([
-      expect.objectContaining({ kind: "message", message }),
-    ]);
-  });
-
-  it.each([false, true])("promotes pending input exactly once (system=%s)", (system) => {
-    const clients = [{ id: "cli", mode: "cli", displayName: "Release helper" }];
-    const promoted = {
-      role: "user",
-      content: "Keep my accepted input",
-      ...(system
-        ? { provenance: { kind: "internal_system", sourceTool: "main_session_restart_recovery" } }
-        : {}),
-      __openclaw: {
-        id: "input-1",
-        seq: 2,
-        idempotencyKey: "run-queued:user",
-        transport: { clients },
-      },
-    };
-    const props = {
-      paneId: "promoted-pane",
-      sessionKey,
-      messages: [promoted],
-      pendingInputs: [
+  it("keeps a user's System prefix and sender attribution through promotion", () => {
+    const inputs = pending(baseMessage);
+    for (const consumed of [false, true]) {
+      expect(render(consumed ? [baseMessage] : [], inputs)).toMatchObject([
         {
-          ...input,
-          message: {
-            ...promoted,
-            __openclaw: { id: `pending:${input.id}`, transport: { clients } },
-          },
+          kind: "group",
+          role: "user",
+          sourceClients: clients,
+          messages: [{ message: consumed ? baseMessage : inputs[0]?.message }],
         },
-      ],
-      queue: [],
-      toolMessages: [],
-      streamSegments: [],
-      stream: null,
-      streamStartedAt: null,
-      showToolCalls: true,
-    };
-    const pendingItems = buildChatItems({ ...props, messages: [] });
-    expect(pendingItems).toHaveLength(1);
-    expect(pendingItems[0]).toMatchObject(
-      system
-        ? { kind: "notice", label: "System · restart recovery" }
-        : { kind: "group", role: "user", sourceClients: clients },
-    );
-
-    const items = buildChatItems(props);
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject(
-      system
-        ? {
-            kind: "notice",
-            label: "System · restart recovery",
-            boundaryId: "send:run-queued",
-          }
-        : {
-            kind: "group",
-            role: "user",
-            sourceClients: clients,
-            messages: [{ message: promoted }],
-          },
-    );
+      ]);
+    }
   });
 });
