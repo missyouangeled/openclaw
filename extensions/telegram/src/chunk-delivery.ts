@@ -2,7 +2,10 @@ import {
   createChannelPartialDeliveryError,
   isChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
-import { createMessageReceiptFromOutboundResults } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createMessageReceiptFromOutboundResults,
+  listMessageReceiptPlatformIds,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import { isSafeToRetrySendError, isTelegramBadRequestError } from "./network-errors.js";
 import type { TelegramPromptContextProjectionSequence } from "./prompt-context-projection.js";
@@ -18,7 +21,12 @@ export function mergeTelegramPartialDeliveryError(
   priorDeliveryResult: PartialDeliveryResult,
 ): ReturnType<typeof createChannelPartialDeliveryError> {
   if (!isChannelPartialDeliveryError(error)) {
-    return createChannelPartialDeliveryError(error, priorDeliveryResult);
+    return createChannelPartialDeliveryError(error, {
+      ...priorDeliveryResult,
+      ...(priorDeliveryResult.receipt
+        ? { messageIds: listMessageReceiptPlatformIds(priorDeliveryResult.receipt) }
+        : {}),
+    });
   }
   const currentDeliveryResult = error.deliveryResult;
   const messageIds = [
@@ -28,11 +36,15 @@ export function mergeTelegramPartialDeliveryError(
     ]),
   ];
   let receipt = currentDeliveryResult.receipt ?? priorDeliveryResult.receipt;
-  if (priorDeliveryResult.receipt && currentDeliveryResult.receipt) {
+  if (priorDeliveryResult.receipt || currentDeliveryResult.receipt) {
     receipt = createMessageReceiptFromOutboundResults({
       results: [
-        { receipt: priorDeliveryResult.receipt },
-        { receipt: currentDeliveryResult.receipt },
+        ...(priorDeliveryResult.receipt
+          ? [{ receipt: priorDeliveryResult.receipt }]
+          : (priorDeliveryResult.messageIds ?? []).map((messageId) => ({ messageId }))),
+        ...(currentDeliveryResult.receipt
+          ? [{ receipt: currentDeliveryResult.receipt }]
+          : (currentDeliveryResult.messageIds ?? []).map((messageId) => ({ messageId }))),
       ],
     });
     // A per-message observer receipt can overlap a whole accepted album.
@@ -50,7 +62,7 @@ export function mergeTelegramPartialDeliveryError(
     ...priorDeliveryResult,
     ...currentDeliveryResult,
     ...(messageIds.length > 0 ? { messageIds } : {}),
-    ...(receipt ? { receipt } : {}),
+    ...(receipt ? { receipt, messageIds: listMessageReceiptPlatformIds(receipt) } : {}),
     visibleReplySent: true,
   });
 }
