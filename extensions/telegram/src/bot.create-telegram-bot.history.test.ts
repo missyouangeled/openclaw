@@ -27,6 +27,7 @@ beforeEach(() => {
   storePath = resolveStorePath(undefined, { agentId: "main" });
   cfg = {
     session: { store: storePath },
+    messages: { inbound: { debounceMs: 0 } },
     commands: { native: false },
     channels: {
       telegram: {
@@ -188,7 +189,10 @@ describe("registered Telegram retained history", () => {
 
   it("does not duplicate an observed outbound reply in ambient history", async () => {
     cfg.channels!.telegram!.groups = { "*": { requireMention: false } };
-    cfg.messages = { groupChat: { unmentionedInbound: "room_event", mentionPatterns: [] } };
+    cfg.messages = {
+      ...cfg.messages,
+      groupChat: { unmentionedInbound: "room_event", mentionPatterns: [] },
+    };
     const bot = createBot(false, true, cfg);
     const sent = { ...message("Already delivered"), chat: group, from: bot.botInfo };
     await recordOutboundMessageForPromptContext({

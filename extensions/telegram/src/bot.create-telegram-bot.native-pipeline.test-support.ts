@@ -44,6 +44,9 @@ const replySpy = vi.fn<ReplyResolver>();
 const buildModelsProviderData = vi.fn(defaultTelegramBotDeps.buildModelsProviderData);
 const listSkillCommandsForAgents = vi.fn(defaultTelegramBotDeps.listSkillCommandsForAgents);
 export const harness = {
+  get state() {
+    return state;
+  },
   replySpy,
   listSkillCommandsForAgents,
   telegramBotDepsForTest: {
@@ -111,6 +114,10 @@ export function createBot(
     commands: { native, text },
     channels: { telegram: { dmPolicy: "open", allowFrom: ["*"], streaming: { mode: "off" } } },
   };
+  // These fixtures admit discrete messages; batching cases retain their authored windows.
+  const messages = (cfg.messages ??= {});
+  const inbound = (messages.inbound ??= {});
+  inbound.debounceMs ??= 0;
   publishTelegramTestConfig(cfg);
   const abort = new AbortController();
   const token = resolveTelegramAccount({ cfg, accountId }).token;

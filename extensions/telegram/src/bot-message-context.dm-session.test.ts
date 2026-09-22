@@ -20,6 +20,7 @@ import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { getReplyFromConfig } from "openclaw/plugin-sdk/reply-runtime";
 import {
   deleteSessionEntry,
   getSessionEntry,
@@ -29,6 +30,7 @@ import {
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  apiCalls,
   chat,
   commandMessage,
   createBot,
@@ -171,6 +173,85 @@ describe("Telegram recorded session destinations", () => {
       const delivery = getSessionEntry({ storePath, sessionKey: key })?.delivery;
       expect(delivery).toMatchObject({ kind: "external", context: { channel: "telegram", to } });
       expect(delivery?.kind === "external" ? delivery.context.threadId : null).toBe(savedThread);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps the Telegram-selected session through real /help initialization with DM topic=%s",
+    async (isTopic) => {
+      const targetSessionKey = "agent:main:telegram-bound";
+      const selectedSessionKey = isTopic
+        ? "agent:main:telegram-bound:thread:42001:42"
+        : targetSessionKey;
+      const wrongSessionKeys = [
+        "agent:main:telegram:direct:42001",
+        ...(isTopic ? ["agent:main:telegram:direct:42001:thread:42001:42", targetSessionKey] : []),
+      ];
+      cfg.session = { ...cfg.session, dmScope: "per-channel-peer" };
+      cfg.commands = { native: false, text: true };
+      cfg.agents = {
+        ownership: "explicit",
+        entries: { main: { workspace: harness.state.workspaceDir } },
+        defaults: {
+          workspace: harness.state.workspaceDir,
+          skipBootstrap: true,
+          model: { primary: "openai/gpt-5.4" },
+        },
+      };
+      cfg.plugins = { enabled: false };
+      const previousFastTest = process.env.OPENCLAW_TEST_FAST;
+      vi.stubEnv("OPENCLAW_TEST_FAST", "0");
+      try {
+        const bot = createBot(false, true, cfg, isTopic);
+        await harness.state.writeConfig(cfg);
+        bind(String(chat.id), targetSessionKey);
+        for (const sessionKey of [selectedSessionKey, ...wrongSessionKeys]) {
+          expect(getSessionEntry({ agentId: "main", storePath, sessionKey })).toBeUndefined();
+        }
+        harness.replySpy.mockImplementation(async (context, options) => {
+          expect(context.SessionKey).toBe(selectedSessionKey);
+          expect(context.CommandSource).toBe("text");
+          expect(context.CommandTargetSessionKey).toBeUndefined();
+          const reply = await getReplyFromConfig(context, options, cfg);
+          const replies = Array.isArray(reply) ? reply : [reply];
+          expect(replies.map((payload) => payload?.text ?? "").join("\n")).toContain("ℹ️ Help");
+          return reply;
+        });
+        const startedAt = Date.now();
+        await receive(bot, {
+          ...commandMessage("/help"),
+          ...(isTopic ? { message_thread_id: 42, is_topic_message: true } : {}),
+        });
+        expect(harness.replySpy).toHaveBeenCalledOnce();
+        const sends = apiCalls.mock.calls.filter(([method]) => method === "sendMessage");
+        expect(sends).toEqual([
+          [
+            "sendMessage",
+            expect.objectContaining({
+              chat_id: String(chat.id),
+              text: expect.stringContaining("Help"),
+              ...(isTopic ? { message_thread_id: 42 } : {}),
+            }),
+          ],
+        ]);
+        if (!isTopic) {
+          expect(sends[0]?.[1]).not.toHaveProperty("message_thread_id");
+        }
+        const selected = getSessionEntry({
+          agentId: "main",
+          storePath,
+          sessionKey: selectedSessionKey,
+        });
+        // Inbound metadata can create a row before the resolver; only real reply
+        // initialization records the session start and interaction timestamps.
+        expect(selected?.sessionStartedAt).toBeGreaterThanOrEqual(startedAt);
+        expect(selected?.lastInteractionAt).toBeGreaterThanOrEqual(startedAt);
+        for (const sessionKey of wrongSessionKeys) {
+          expect(getSessionEntry({ agentId: "main", storePath, sessionKey })).toBeUndefined();
+        }
+      } finally {
+        vi.stubEnv("OPENCLAW_TEST_FAST", previousFastTest);
+      }
     },
   );
 

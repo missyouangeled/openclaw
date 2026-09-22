@@ -181,6 +181,7 @@ describe("telegram text fragments", () => {
     async () => {
       const originalLoadConfig = telegramBotDepsForTest.getRuntimeConfig;
       telegramBotDepsForTest.getRuntimeConfig = (() => ({
+        messages: { inbound: { debounceMs: 0 } },
         channels: {
           telegram: {
             dmPolicy: "open",
@@ -257,6 +258,7 @@ describe("telegram text fragments", () => {
       const createBuffers = vi.spyOn(bufferRuntime, "createTelegramInboundBuffers");
       const originalLoadConfig = telegramBotDepsForTest.getRuntimeConfig;
       telegramBotDepsForTest.getRuntimeConfig = (() => ({
+        messages: { inbound: { debounceMs: 0 } },
         channels: {
           telegram: {
             dmPolicy: "open",
