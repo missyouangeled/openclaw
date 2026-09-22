@@ -7,6 +7,10 @@ import { closeQaRuntimeStores } from "openclaw/plugin-sdk/qa-runtime";
 import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
 import { patchSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import type * as SessionTranscriptRuntime from "openclaw/plugin-sdk/session-transcript-runtime";
+import {
+  drainSessionDiskBudgetWorkers,
+  withSessionHistoryBudgetSweepsForTest,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { makeAgentAssistantMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, it, vi } from "vitest";
 import {
@@ -48,7 +52,9 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
       const mediaUrls = ["/tmp/lead.txt", aliasRecord.filePath];
       const recordedMedia = "/tmp/recorded.ogg";
       try {
-        await patchSessionEntry({ ...scope, fallbackEntry: entry, update: () => entry });
+        await withSessionHistoryBudgetSweepsForTest(() =>
+          patchSessionEntry({ ...scope, fallbackEntry: entry, update: () => entry }),
+        );
         const manager = SessionManager.open(scope, root);
         const transcript = await vi.importActual<typeof SessionTranscriptRuntime>(
           "openclaw/plugin-sdk/session-transcript-runtime",
@@ -129,6 +135,7 @@ describeTelegramDispatch("dispatchTelegramMessage directive delivery", () => {
         }
         expect(answerDraftStream.update).not.toHaveBeenCalledWith(fullText);
       } finally {
+        await drainSessionDiskBudgetWorkers();
         await closeQaRuntimeStores(root);
         await fs.rm(root, { recursive: true, force: true });
       }

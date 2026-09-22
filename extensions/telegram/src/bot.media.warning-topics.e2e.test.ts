@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  flushChannelPostMediaGroup,
+  holdTelegramMediaTimeouts,
+} from "./bot-media-timers.test-support.js";
 import {
   onSpy,
   readRemoteMediaBufferSpy,
@@ -7,7 +11,6 @@ import {
 } from "./bot.media.e2e.test-harness.js";
 import {
   TELEGRAM_TEST_TIMINGS,
-  holdTelegramMediaTimeouts,
   createBotHandlerWithOptions,
   createTelegramPhotoForTest,
   mockTelegramPngDownload,
@@ -177,14 +180,8 @@ describe("Telegram media failure notices", () => {
           getFile: async () => ({ file_path: `photos/album-${index}.jpg` }),
         });
       }
-      const flush = setTimeoutSpy.mock.calls.findLast(
-        ([, delay]) => delay === TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-      )?.[0];
-      if (typeof flush !== "function") {
-        throw new Error("Expected the album flush deadline");
-      }
-      flush();
-      await vi.waitFor(() => expect(replySpy).toHaveBeenCalledTimes(1));
+      await flushChannelPostMediaGroup(setTimeoutSpy, 0, TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
+      expect(replySpy).toHaveBeenCalledTimes(1);
       const payload = replySpy.mock.calls[0]?.[0];
       expect(payload).toMatchObject({
         BodyForAgent: failedCount

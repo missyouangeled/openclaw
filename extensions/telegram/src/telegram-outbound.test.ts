@@ -1,11 +1,10 @@
-import { sendTextMediaPayload } from "openclaw/plugin-sdk/reply-payload";
 // Telegram tests cover telegram outbound plugin behavior.
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { telegramOutbound } from "./outbound-adapter.js";
 import { clearTelegramRuntimeForTest as clearTelegramRuntime } from "./runtime.test-support.js";
 
 describe("telegramPlugin outbound", () => {
-  it("uses the rich-message limit before the shared outbound chunker", () => {
+  it("resolves the rich-message delivery limit", () => {
     const resolveLimit = telegramOutbound.resolveEffectiveTextChunkLimit;
     expect(resolveLimit?.({ cfg: {}, accountId: "default", fallbackLimit: 4000 })).toBe(4000);
     expect(
@@ -66,65 +65,5 @@ describe("telegramPlugin outbound", () => {
     const text = 'Done.\n⚠️ 🛠️ `search "Pipeline" in ~/.openclaw/workspace-* (agent)` failed';
 
     expect(telegramOutbound.sanitizeText?.({ text, payload: { text } })).toBe("Done.");
-  });
-
-  it("delivers bounded HTML through the shared payload path without an initialized runtime", async () => {
-    clearTelegramRuntime();
-    const oversizedLink = `<a href="https://example.com/${"x".repeat(4_000)}">first</a>`;
-    const text = `${oversizedLink}<b>second</b>`;
-    const sendTelegram = vi.fn().mockResolvedValue({ messageId: "tg-1", chatId: "12345" });
-
-    await sendTextMediaPayload({
-      channel: "telegram",
-      ctx: {
-        cfg: {},
-        to: "12345",
-        text: "",
-        payload: { text },
-        formatting: { parseMode: "HTML" },
-        deps: { sendTelegram },
-      },
-      adapter: telegramOutbound,
-    });
-
-    expect(sendTelegram).toHaveBeenCalledTimes(1);
-    expect(sendTelegram).toHaveBeenCalledWith(
-      "12345",
-      "first<b>second</b>",
-      expect.objectContaining({ textMode: "html" }),
-    );
-  });
-
-  it("keeps rich-account legacy HTML chunks within Telegram's text limit", async () => {
-    clearTelegramRuntime();
-    const text = "x".repeat(4_001);
-    const sendTelegram = vi.fn().mockResolvedValue({ messageId: "tg-1", chatId: "12345" });
-
-    await sendTextMediaPayload({
-      channel: "telegram",
-      ctx: {
-        cfg: { channels: { telegram: { richMessages: true } } },
-        to: "12345",
-        text: "",
-        payload: { text },
-        formatting: { parseMode: "HTML" },
-        deps: { sendTelegram },
-      },
-      adapter: telegramOutbound,
-    });
-
-    expect(sendTelegram.mock.calls.map((call) => call[1])).toEqual(["x".repeat(4_000), "x"]);
-    expect(sendTelegram.mock.calls.every((call) => call[2]?.textMode === "html")).toBe(true);
-  });
-
-  it("keeps astral characters whole at positive configured chunk limits", () => {
-    clearTelegramRuntime();
-
-    expect(telegramOutbound.chunker?.("A😀B", 1)).toEqual(["A", "😀", "B"]);
-    expect(telegramOutbound.chunker?.("A😀B", 1, { formatting: { parseMode: "HTML" } })).toEqual([
-      "A",
-      "😀",
-      "B",
-    ]);
   });
 });

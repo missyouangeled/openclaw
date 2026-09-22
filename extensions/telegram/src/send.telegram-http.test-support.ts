@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Bot } from "grammy";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { captureEnv } from "openclaw/plugin-sdk/test-env";
 import { afterAll, beforeAll, beforeEach } from "vitest";
 import { deliverReplies } from "./bot/delivery.js";
 import { createTelegramOutboundAdapter } from "./outbound-adapter.js";
@@ -27,6 +28,7 @@ export function useTelegramHttpFixture() {
   let bot: Bot;
   let mediaDir: string;
   let photoPath: string;
+  let env: ReturnType<typeof captureEnv> | undefined;
   const sockets = new Set<Socket>();
   const requests: Array<{ method: string; fields: Record<string, unknown> }> = [];
   const events: string[] = [];
@@ -57,6 +59,31 @@ export function useTelegramHttpFixture() {
   };
 
   beforeAll(async () => {
+    const proxyKeys = [
+      "OPENCLAW_DEBUG_PROXY_ENABLED",
+      "OPENCLAW_DEBUG_PROXY_URL",
+      "ALL_PROXY",
+      "all_proxy",
+      "HTTP_PROXY",
+      "http_proxy",
+      "HTTPS_PROXY",
+      "https_proxy",
+      "NO_PROXY",
+      "no_proxy",
+      "OPENCLAW_PROXY_URL",
+      "OPENCLAW_PROXY_ACTIVE",
+      "OPENCLAW_PROXY_CA_FILE",
+    ];
+    env = captureEnv([...proxyKeys, "OPENCLAW_TELEGRAM_DNS_RESULT_ORDER"]);
+    // Loopback transport proof must not inherit a host proxy or lose its direct fallback.
+    for (const key of proxyKeys) {
+      delete process.env[key];
+    }
+    // Native fetch may have captured the proxy at process startup; keep local requests local.
+    process.env.NO_PROXY = "127.0.0.1,localhost,::1";
+    process.env.no_proxy = process.env.NO_PROXY;
+    process.env.OPENCLAW_TELEGRAM_DNS_RESULT_ORDER = "ipv4first";
+    resetTelegramClientOptionsCacheForTests();
     mediaDir = await fs.mkdtemp(path.join(os.tmpdir(), "telegram-physical-send-"));
     photoPath = path.join(mediaDir, "pixel.png");
     await fs.writeFile(
@@ -185,14 +212,18 @@ export function useTelegramHttpFixture() {
   });
 
   afterAll(async () => {
-    resetTelegramClientOptionsCacheForTests();
-    for (const socket of sockets) {
-      socket.destroy();
+    try {
+      resetTelegramClientOptionsCacheForTests();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+      await fs.rm(mediaDir, { recursive: true, force: true });
+    } finally {
+      env?.restore();
     }
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
-    await fs.rm(mediaDir, { recursive: true, force: true });
   });
 
   async function sendThrough(

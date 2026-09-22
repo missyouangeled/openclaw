@@ -3,7 +3,6 @@ import {
   clearPluginInteractiveHandlers,
   registerPluginInteractiveHandler,
 } from "openclaw/plugin-sdk/plugin-runtime";
-import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   closeOpenClawStateDatabaseForTest,
   createPluginStateKeyedStoreForTests,
@@ -20,6 +19,7 @@ import {
   upsertSessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { mockPinnedHostnameResolution } from "openclaw/plugin-sdk/test-env";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
@@ -29,7 +29,7 @@ import {
   type SessionBindingRecord,
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/thread-bindings-runtime";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTelegramApprovalCallbackData } from "./approval-callback-data.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
@@ -51,10 +51,11 @@ import type {
 } from "./interactive-dispatch.js";
 import { buildTelegramOpaqueCallbackData } from "./native-command-callback-data.js";
 import { recordTelegramPollRegistryEntry } from "./poll-registry.js";
-import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-support.js";
-import { setTelegramRuntime } from "./runtime.js";
+import {
+  setTelegramPluginStateRuntimeForTests,
+  setTelegramPollRegistryRuntimeForTests,
+} from "./runtime-state.test-support.js";
 import { clearTelegramRuntimeForTest as clearTelegramRuntime } from "./runtime.test-support.js";
-import type { TelegramRuntime } from "./runtime.types.js";
 
 const questionGatewayHoisted = vi.hoisted(() => ({
   resolveQuestionOverGatewaySpy: vi.fn(async () => ({
@@ -375,17 +376,6 @@ async function installTelegramPollRegistryForTests(entry?: TelegramPollRegistryE
     await recordTelegramPollRegistryEntry(entry);
   }
   return store;
-}
-
-function setTelegramPollRegistryRuntimeForTests(
-  store: PluginStateKeyedStore<TelegramPollRegistryEntry>,
-): void {
-  setTelegramRuntime({
-    state: {
-      openKeyedStore: (() => store) as TelegramRuntime["state"]["openKeyedStore"],
-    },
-    channel: {},
-  } as TelegramRuntime);
 }
 
 function getTelegramPollAnswerHandlerForTests() {
@@ -714,24 +704,26 @@ describe("createTelegramBot", () => {
   beforeAll(async () => {
     ({ createTelegramBotCore: createTelegramBotBase } = await import("./bot-core.js"));
   });
-  beforeAll(async () => {
+  beforeEach(async () => {
     process.env.TZ = "UTC";
     // Isolate persistent state from the operator's real ~/.openclaw: assembled
     // turns resolve session/agent bindings through the state DB, and an ambient
     // Codex session binding fails its generation reclaim, so the embedded agent
     // drops the turn without replying and reply-wait tests hang to timeout.
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     telegramTestState = await createOpenClawTestState({
       label: "telegram-bot",
       layout: "state-only",
     });
   });
-  afterAll(async () => {
+  afterEach(async () => {
     if (ORIGINAL_TZ === undefined) {
       delete process.env.TZ;
     } else {
       process.env.TZ = ORIGINAL_TZ;
     }
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await telegramTestState.cleanup();
   });
@@ -3406,6 +3398,7 @@ describe("createTelegramBot", () => {
 
     await handler({
       message: {
+        message_id: 43,
         chat: { id: -100123456789, type: "group", title: "Test Group" },
         from: { id: 999999, username: "random" },
         text: "hello",
@@ -3430,6 +3423,7 @@ describe("createTelegramBot", () => {
 
     await handler({
       message: {
+        message_id: 43,
         chat: { id: -100123456789, type: "group", title: "Test Group" },
         from: { id: 999999, username: "random" },
         text: "/status",

@@ -14,6 +14,13 @@ import { clearTelegramRuntimeForTest } from "./runtime.test-support.js";
 import type { TelegramRuntime } from "./runtime.types.js";
 
 const readAcpSessionEntryMock = vi.hoisted(() => vi.fn());
+const createForumTopicMock = vi.hoisted(() =>
+  vi.fn<typeof import("./send-forum-topics.js").createForumTopicTelegram>(),
+);
+
+vi.mock("./send-runtime.js", () => ({
+  loadTelegramSendModule: async () => ({ createForumTopicTelegram: createForumTopicMock }),
+}));
 
 vi.mock("openclaw/plugin-sdk/acp-runtime", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/acp-runtime")>(
@@ -41,7 +48,13 @@ type ThreadBindingStoreEntry = ReturnType<
   ReturnType<typeof createTelegramThreadBindingManagerImpl>["listBindings"]
 >[number];
 
-const TELEGRAM_THREAD_BINDINGS_TEST_CFG: OpenClawConfig = {};
+const TELEGRAM_THREAD_BINDINGS_TEST_CFG: OpenClawConfig = {
+  channels: {
+    telegram: {
+      botToken: "test-token",
+    },
+  },
+};
 
 type TelegramThreadBindingManagerParams = Parameters<
   typeof createTelegramThreadBindingManagerImpl
@@ -116,6 +129,7 @@ describe("telegram thread bindings", () => {
     installThreadBindingStore(createThreadBindingStore());
     threadBindingStore.clear();
     readAcpSessionEntryMock.mockReset();
+    createForumTopicMock.mockReset();
     const acpRuntime = await vi.importActual<typeof import("openclaw/plugin-sdk/acp-runtime")>(
       "openclaw/plugin-sdk/acp-runtime",
     );
@@ -129,6 +143,52 @@ describe("telegram thread bindings", () => {
     resetPluginStateStoreForTests();
     await openClawState.cleanup();
   });
+
+  it.each(["before-create", "after-create"] as const)(
+    "settles forum-topic binding only after native create admission (%s revocation)",
+    async (revokeAt) => {
+      const manager = createTelegramThreadBindingManager({
+        accountId: "default",
+        persist: false,
+        enableSweeper: false,
+      });
+      let ownerCurrent = true;
+      let nativeCreates = 0;
+      createForumTopicMock.mockImplementationOnce(async (_chatId, _name, options) => {
+        if (revokeAt === "before-create") {
+          ownerCurrent = false;
+        }
+        options.assertPlatformSendAuthorized?.();
+        nativeCreates += 1;
+        ownerCurrent = false;
+        return { chatId: "-100200300", topicId: 88, name: "Bound topic" };
+      });
+      const result = getSessionBindingService().bind({
+        targetSessionKey: "agent:main:created-topic",
+        targetKind: "session",
+        conversation: { channel: "telegram", accountId: "default", conversationId: "-100200300" },
+        placement: "child",
+        assertCurrent: () => {
+          if (!ownerCurrent) {
+            throw new Error("Command owner was revoked");
+          }
+        },
+      });
+      if (revokeAt === "before-create") {
+        await expect(result).rejects.toThrow("failed to bind");
+        expect(nativeCreates).toBe(0);
+        expect(manager.getByConversationId("-100200300:topic:88")).toBeUndefined();
+      } else {
+        await expect(result).resolves.toMatchObject({
+          targetSessionKey: "agent:main:created-topic",
+        });
+        expect(nativeCreates).toBe(1);
+        expect(manager.getByConversationId("-100200300:topic:88")).toMatchObject({
+          targetSessionKey: "agent:main:created-topic",
+        });
+      }
+    },
+  );
 
   it("drops stopped-manager bindings without clearing a replacement generation", async () => {
     const stopped = createTelegramThreadBindingManager({

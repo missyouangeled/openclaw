@@ -195,6 +195,8 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             onObservedReplyDelivery: async () => {
               markFinalStarted(turn);
               await waitForDraftEvents(turn);
+              // The observed final supersedes any accepted block still awaiting settlement.
+              turn.activeAnswerBlockDelivery = undefined;
               markFinalDelivered(turn);
               turn.deliveryState.markDelivered();
               await cleanupDrafts(turn, turn.isSuperseded());

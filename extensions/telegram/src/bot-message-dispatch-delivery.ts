@@ -197,8 +197,9 @@ function createDeliveryBaseOptions(turn: Turn) {
 }
 
 const usesNativeTelegramQuote = (turn: Turn, payload: ReplyPayload): boolean =>
-  turn.replyQuoteText != null ||
-  (payload.replyToId != null && turn.replyQuoteByMessageId[payload.replyToId] != null);
+  (turn.replyToMode !== "off" || payload.replyToTag === true || payload.replyToCurrent === true) &&
+  (turn.replyQuoteText != null ||
+    (payload.replyToId != null && turn.replyQuoteByMessageId[payload.replyToId] != null));
 
 export async function sendPayload(
   sourceTurn: Turn,

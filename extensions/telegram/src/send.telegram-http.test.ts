@@ -742,6 +742,31 @@ describe("Telegram physical send acceptance over HTTP", () => {
     },
   );
 
+  it("preserves captured forum-topic authority after awaited target preparation", async () => {
+    let platformCurrent = true;
+    const options = {
+      cfg,
+      api: bot.api,
+      assertPlatformSendAuthorized: () => {
+        if (!platformCurrent) {
+          throw new Error("Platform request authority revoked");
+        }
+      },
+    };
+    fixture.responseFor = (method) => {
+      if (method !== "getChat") {
+        return undefined;
+      }
+      platformCurrent = false;
+      options.assertPlatformSendAuthorized = () => {};
+      return { id: -100123, type: "supergroup", title: "Resolved" };
+    };
+    await expect(
+      createForumTopicTelegram("@platformbound", "Bound topic", options),
+    ).rejects.toThrow("Platform request authority revoked");
+    expect(requests).toEqual([{ method: "getChat", fields: { chat_id: "@platformbound" } }]);
+  });
+
   it("validates forum names by code points rather than UTF-16 length", async () => {
     const opts = { cfg, api: bot.api };
     const name = "😀".repeat(128);

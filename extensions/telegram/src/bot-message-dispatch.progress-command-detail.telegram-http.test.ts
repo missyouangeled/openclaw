@@ -24,6 +24,14 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
             [],
           );
           if (mode === "progress") {
+            // A preamble replaces reasoning rows, so verify token updates before it arrives.
+            await options?.onReasoningProgress?.({ progressTokens: 50 });
+            await options?.onReasoningProgress?.({ progressTokens: 200 });
+            await waitForBotApiCall((call) => String(call.fields.text).includes("200 tokens"));
+            const card = [...visibleMessages.values()][0] ?? "";
+            expect(card).toContain("200 tokens");
+            expect(card).not.toContain("50 tokens");
+            expect(card.match(/tokens/gu)).toHaveLength(1);
             await options?.onItemEvent?.({
               kind: "preamble",
               itemId: "callback-preamble",
@@ -56,13 +64,7 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
             expect([...visibleMessages.values()][0]).toContain("Checking the queued work");
             expect([...visibleMessages.values()][0]?.match(/Agents/gu)).toHaveLength(1);
             expect([...visibleMessages.values()][0]).not.toContain("Agents summary");
-            await options?.onReasoningProgress?.({ progressTokens: 50 });
-            await options?.onReasoningProgress?.({ progressTokens: 200 });
-            await waitForBotApiCall((call) => String(call.fields.text).includes("200 tokens"));
-            const card = [...visibleMessages.values()][0] ?? "";
-            expect(card).toContain("200 tokens");
-            expect(card).not.toContain("50 tokens");
-            expect(card.match(/tokens/gu)).toHaveLength(1);
+            expect([...visibleMessages.values()][0]).not.toContain("tokens");
           }
         },
         { mode, toolProgress: true, finalReply: { text: "The queued work is complete." } },

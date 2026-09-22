@@ -403,7 +403,7 @@ async function resetTelegramDispatchTestState() {
     onModelSelected: () => undefined,
   });
   wasSentByBot.mockReset().mockReturnValue(false);
-  resolveStorePath.mockReset().mockReturnValue("/tmp/sessions.json");
+  resolveStorePath.mockReset().mockReturnValue(testState.path("sessions.json"));
   readLatestAssistantTextByIdentity.mockResolvedValue(undefined);
   appendAssistantMirrorMessageByIdentity.mockResolvedValue({
     ok: true,
@@ -523,7 +523,8 @@ export function createContext(overrides?: Partial<TelegramMessageContext>): Tele
     reactionApi: null,
   } as unknown as TelegramMessageContext;
   base.turn = {
-    storePath: "/tmp/openclaw/telegram-sessions.json",
+    // Prepared turns also read pending-delivery state before entering the mocked producer.
+    storePath: testState.path("sessions.json"),
     recordInboundSession: vi.fn(async () => undefined),
     record: {
       onRecordError: vi.fn(),

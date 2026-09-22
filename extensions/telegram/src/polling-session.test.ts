@@ -10,7 +10,6 @@ import { toErrorObject as toLintErrorObject } from "openclaw/plugin-sdk/error-ru
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   closeOpenClawStateDatabaseForTest,
-  createChannelIngressQueueForTests as createChannelIngressQueue,
   executeSqliteQuerySync,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,12 +25,11 @@ import {
   topicUpdate,
   type TestTelegramUpdate,
 } from "./polling-session-spool.test-support.js";
-import { setTelegramRuntime } from "./runtime.js";
+import { installTelegramIngressQueueRuntime } from "./runtime-state.test-support.js";
 import {
   clearTelegramRuntimeForTest as clearTelegramRuntime,
   resetTelegramReplyFenceForTest as resetTelegramReplyFenceForTests,
 } from "./runtime.test-support.js";
-import type { TelegramRuntime } from "./runtime.types.js";
 import {
   TELEGRAM_INGRESS_WORKER_RUNTIME_MARKER,
   type TelegramIngressWorkerMessage,
@@ -141,25 +139,6 @@ type IsolatedIngressOptions = NonNullable<
 >;
 
 const POLLING_TEST_WATCHDOG_INTERVAL_MS = 30_000;
-
-function installTelegramIngressQueueRuntime(
-  resolveStateDir: () => string,
-  queueOpenError?: Error,
-): void {
-  setTelegramRuntime({
-    state: {
-      resolveStateDir,
-      openChannelIngressQueue: (
-        options?: Omit<Parameters<typeof createChannelIngressQueue>[0], "channelId">,
-      ) => {
-        if (queueOpenError) {
-          throw queueOpenError;
-        }
-        return createChannelIngressQueue({ ...options, channelId: "telegram" });
-      },
-    },
-  } as TelegramRuntime);
-}
 
 function mockObjectArg(
   source: MockCallSource,

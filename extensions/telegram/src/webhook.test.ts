@@ -11,6 +11,7 @@ import {
   createChannelIngressQueueForTests as createChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { DEFAULT_INGRESS_ADOPTION_STALL_MS } from "openclaw/plugin-sdk/channel-outbound";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import {
   onDiagnosticEvent,
   waitForDiagnosticEventsDrained,
@@ -37,6 +38,7 @@ import {
 } from "./bot-processing-outcome.js";
 import { commitTelegramMessageDispatchReplay } from "./message-dispatch-dedupe.js";
 import { monitorTelegramProvider } from "./monitor.js";
+import { installTelegramIngressQueueRuntime } from "./runtime-state.test-support.js";
 import { setTelegramRuntime } from "./runtime.js";
 import { clearTelegramRuntimeForTest as clearTelegramRuntime } from "./runtime.test-support.js";
 import type { TelegramRuntime } from "./runtime.types.js";
@@ -155,25 +157,6 @@ vi.mock("./fetch.js", () => ({
 let startTelegramWebhook: typeof import("./webhook.js").startTelegramWebhook;
 let webhookStateDir: string | undefined;
 let webhookSpoolDir: string | undefined;
-
-function installTelegramIngressQueueRuntime(
-  resolveStateDir: () => string,
-  queueOpenError?: Error,
-): void {
-  setTelegramRuntime({
-    state: {
-      resolveStateDir,
-      openChannelIngressQueue: (
-        options?: Omit<Parameters<typeof createChannelIngressQueue>[0], "channelId">,
-      ) => {
-        if (queueOpenError) {
-          throw queueOpenError;
-        }
-        return createChannelIngressQueue({ ...options, channelId: "telegram" });
-      },
-    },
-  } as TelegramRuntime);
-}
 
 function requireWebhookSpoolDir(): string {
   if (!webhookSpoolDir) {
@@ -1263,6 +1246,7 @@ describe("startTelegramWebhook", () => {
       markEnqueueStarted = resolve;
     });
     setTelegramRuntime({
+      channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
       state: {
         resolveStateDir: () => webhookStateDir ?? os.tmpdir(),
         openChannelIngressQueue: (
@@ -2185,6 +2169,7 @@ describe("startTelegramWebhook", () => {
     vi.useFakeTimers();
     let completeAttempts = 0;
     setTelegramRuntime({
+      channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
       state: {
         resolveStateDir: () => webhookStateDir ?? os.tmpdir(),
         openChannelIngressQueue: (

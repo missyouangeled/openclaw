@@ -7,6 +7,8 @@ import type {
   TelegramMediaRef,
   TelegramMessageContext,
 } from "./bot-message-context.js";
+import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-support.js";
+import { getOptionalTelegramRuntime } from "./runtime.js";
 
 const baseTelegramMessageContextConfig = {
   agents: { defaults: { model: "anthropic/claude-opus-4-5", workspace: "/tmp/openclaw" } },
@@ -65,6 +67,10 @@ export async function buildTelegramMessageContextForTest(
   params: BuildTelegramMessageContextForTestParams,
 ): Promise<TelegramMessageContext | null> {
   const { expect, vi } = await loadVitestModule();
+  // Standalone context tests need ingress authority; preserve a caller-owned runtime.
+  if (!getOptionalTelegramRuntime()) {
+    setTelegramPluginStateRuntimeForTests();
+  }
   const buildTelegramMessageContext = await loadBuildTelegramMessageContext();
   const sessionRuntime =
     params.sessionRuntime === null
