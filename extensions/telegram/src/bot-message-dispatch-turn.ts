@@ -19,6 +19,7 @@ import {
   ingestDraftLaneSegments,
   prepareQueuedAnswerBlock,
   repositionLaneForNewMessage,
+  resetLaneState,
   rotateLaneForNewMessage,
   waitForDraftEvents,
 } from "./bot-message-dispatch-draft.js";
@@ -250,9 +251,17 @@ export async function runTelegramDispatchTurn(turn: Turn) {
               ? () => {
                   const queued = enqueueDraftEvent(turn, async () => {
                     resetReasoningStepState(turn);
+                    const previousAnswerDelivered = turn.previewLifecycle.finalDelivered;
+                    turn.previewLifecycle.reset();
+                    turn.finalDispatchClaimed = false;
                     turn.progressCompositor.beginAssistantMessage();
                     if (turn.answerLane.finalized) {
                       await rotateLaneForNewMessage(turn, turn.answerLane);
+                      turn.rotateAnswerLaneWhenQueuedBlocksSettle = false;
+                    } else if (previousAnswerDelivered) {
+                      // A fresh final may have used the durable sender without leaving a draft ID.
+                      turn.answerLane.stream?.forceNewMessage();
+                      resetLaneState(turn, turn.answerLane);
                       turn.rotateAnswerLaneWhenQueuedBlocksSettle = false;
                     } else if (
                       turn.answerLane.hasStreamedMessage &&
