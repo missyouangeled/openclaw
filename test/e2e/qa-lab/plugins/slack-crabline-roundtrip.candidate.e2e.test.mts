@@ -11,16 +11,13 @@ import {
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { expect, it, vi } from "vitest";
 import {
-  runQaGatewayFixture,
-  stopQaGatewayFixture,
-} from "../../../test/helpers/qa-gateway-cleanup.js";
-import {
+  createQaBusState,
+  createQaCrablineTransportAdapter,
   createQaGatewayChild,
   startQaMockOpenAiServer,
   type MockOpenAiRequestSnapshot,
-} from "../api.js";
-import { createQaBusState } from "../src/bus-state.js";
-import { createQaCrablineTransportAdapter } from "../src/crabline-transport.js";
+} from "../../../../extensions/qa-lab/api.js";
+import { runQaGatewayFixture, stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 
 let startedAdapter: StartedOpenClawCrablineAdapter | undefined;
 let retainedResources = false;
@@ -43,7 +40,7 @@ vi.mock("@openclaw/crabline", async (importOriginal) => {
   };
 });
 
-const repoRoot = path.resolve(import.meta.dirname, "../../..");
+const repoRoot = path.resolve(import.meta.dirname, "../../../..");
 type NativeRecord = ServerRequestEvent & { accepted?: boolean };
 
 function required(name: string): string {
@@ -481,7 +478,7 @@ it.for(["nonstreaming", "default-streaming diagnostic"] as const)(
             identity,
             source,
             effectiveConfig,
-            cells: cells.map((entry) => ({ ...entry })),
+            cells: cells.map((entry) => Object.assign({}, entry)),
             artifactDirectory: directory,
             runtime: { platform: process.platform, arch: process.arch, node: process.version },
             runtimeIdentity: runtimeIdentity
