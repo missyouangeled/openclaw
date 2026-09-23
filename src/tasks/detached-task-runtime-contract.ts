@@ -1,5 +1,6 @@
 // Defines the detached task runtime contract and spawn options.
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { TaskRunOwner } from "./task-registry.process-state.js";
 import type {
   JsonValue,
   TaskDeliveryState,
@@ -11,6 +12,7 @@ import type {
   TaskStatus,
   TaskTerminalOutcome,
 } from "./task-registry.types.js";
+import type { TaskRunOwnerBinding } from "./task-run-owner.js";
 
 // A killed subagent can still report a completion that raced the kill marker.
 // Task cancellation replaces this marker once the operator request is accepted.
@@ -104,6 +106,10 @@ export type DetachedTaskTerminalState = Omit<
 
 export type CreatedDetachedTaskRun = {
   task: TaskRecord;
+  bindRunOwner: (
+    cancel: TaskRunOwner["cancel"],
+    assertCurrent: () => void,
+  ) => Promise<TaskRunOwnerBinding>;
   finalizeActive: (
     terminal: Pick<DetachedTaskTerminalState, "status" | "endedAt" | "error" | "terminalSummary">,
     canSettle: (task: TaskRecord) => boolean,

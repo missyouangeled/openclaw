@@ -80,6 +80,15 @@ function taskReceipt(
 ): CreatedDetachedTaskRun {
   return {
     task,
+    async bindRunOwner(cancel, assertCurrent) {
+      assertCurrent();
+      const release = mocks.bindTaskRunOwner(task, cancel);
+      const owner = mocks.getTaskRunOwner(task);
+      if (!owner) {
+        throw new Error("Expected the bound fixture task owner");
+      }
+      return { owner, release };
+    },
     settleUnstarted,
     finalizeActive: (terminal, canSettle) => mocks.finalizeActive(task, terminal, canSettle),
   };
