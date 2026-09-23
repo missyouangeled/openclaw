@@ -444,37 +444,117 @@ describe("runEmbeddedAttemptSettledPhase", () => {
     },
   );
 
-  it("does not republish a historical image note omitted by compaction", async () => {
-    await withOpenClawTestState({ label: "settled-image-note-context" }, async (testState) => {
-      const first = await createPersistedImageNoteFixture(testState);
-      try {
-        await runEmbeddedAttemptSettledPhase(first.fixture.input);
-      } finally {
-        await first.lifecycle.dispose();
+  it.each(["file-backed", "incognito"] as const)(
+    "does not republish a historical image note omitted by compaction (%s)",
+    async (storage) => {
+      await withOpenClawTestState({ label: "settled-image-note-context" }, async (testState) => {
+        const first = await createPersistedImageNoteFixture(testState, storage);
+        try {
+          await runEmbeddedAttemptSettledPhase(first.fixture.input);
+        } finally {
+          await first.lifecycle.dispose();
+        }
+        const source = await SessionManager.openAsync(first.target, testState.workspaceDir);
+        const kept = source.appendCustomMessageEntry("retained-context", "Current context", true);
+        source.appendCompaction("Earlier image failure summarized", kept, 100);
+        const current = await createPersistedImageNoteFixture(testState, storage, true);
+        try {
+          const expected = current.manager.buildSessionContext().messages;
+          expect(expected).not.toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ customType: "openclaw.system-note" }),
+            ]),
+          );
+          const before = await loadTranscriptEvents(current.target);
+          const actualAttemptResult =
+            await vi.importActual<typeof import("./attempt-result.js")>("./attempt-result.js");
+          mocks.completeResult.mockImplementation(
+            actualAttemptResult.completeEmbeddedAttemptResult,
+          );
+
+          const result = await runEmbeddedAttemptSettledPhase(current.fixture.input);
+
+          expect(await loadTranscriptEvents(current.target)).toEqual(before);
+          expect(current.manager.getLeafId()).toBe(current.previousLeaf);
+          expect(current.manager.buildSessionContext().messages).toEqual(expected);
+          expect(current.activeSession.messages).toEqual(expected);
+          expect(result.messagesSnapshot).toEqual(expected);
+          expect(current.fixture.unsubscribe).toHaveBeenCalledOnce();
+          expect(current.fixture.detachBackend).toHaveBeenCalledOnce();
+        } finally {
+          await current.lifecycle.dispose();
+        }
+      });
+    },
+  );
+
+  it("reconciles the current incognito note after committed publication fails", async () => {
+    await withOpenClawTestState({ label: "settled-incognito-note-replay" }, async (testState) => {
+      const {
+        fixture,
+        target,
+        manager,
+        activeSession,
+        before,
+        previousLeaf,
+        previousMessages,
+        lifecycle,
+      } = await createPersistedImageNoteFixture(testState, "incognito");
+      const state = activeSession.agent.state;
+      const descriptor = Object.getOwnPropertyDescriptor(state, "messages");
+      if (!descriptor) {
+        throw new Error("Expected the fixture's loaded message view");
       }
-      const source = await SessionManager.openAsync(first.target, testState.workspaceDir);
-      const kept = source.appendCustomMessageEntry("retained-context", "Current context", true);
-      source.appendCompaction("Earlier image failure summarized", kept, 100);
-      const current = await createPersistedImageNoteFixture(testState, "file-backed", true);
+      const publicationFailure = new Error("Incognito publication failed after persistence");
+      Object.defineProperty(state, "messages", {
+        configurable: true,
+        get: () => previousMessages,
+        set: () => {
+          throw publicationFailure;
+        },
+      });
       try {
-        const expected = current.manager.buildSessionContext().messages;
-        expect(expected).not.toEqual(
-          expect.arrayContaining([expect.objectContaining({ customType: "openclaw.system-note" })]),
-        );
-        const before = await loadTranscriptEvents(current.target);
+        let failure: unknown;
+        try {
+          await runEmbeddedAttemptSettledPhase(fixture.input);
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toMatchObject({ cause: publicationFailure, committedTarget: target });
+        expect(isRecordedModelFallbackStop(failure)).toBe(true);
+        const committed = await loadTranscriptEvents(target);
+        expect(committed.slice(0, before.length)).toEqual(before);
+        expect(committed).toHaveLength(before.length + 1);
+        const note = committed.at(-1);
+        if (!isRecord(note) || typeof note.id !== "string") {
+          throw new Error("Expected the committed incognito note identity");
+        }
+        expect(failure).toMatchObject({ committedMessageId: note.id });
+        expect(activeSession.messages).toEqual(previousMessages);
+        expect(manager.getLeafId()).toBe(previousLeaf);
+        expect(manager.buildSessionContext().messages).toEqual(previousMessages);
+
+        Object.defineProperty(state, "messages", descriptor);
         const actualAttemptResult =
           await vi.importActual<typeof import("./attempt-result.js")>("./attempt-result.js");
         mocks.completeResult.mockImplementation(actualAttemptResult.completeEmbeddedAttemptResult);
+        const settleStream = mocks.settleStream.getMockImplementation()!;
+        mocks.settleStream.mockImplementationOnce(async (...args) => ({
+          ...(await settleStream(...args)),
+          messagesSnapshot: [...previousMessages],
+        }));
 
-        const result = await runEmbeddedAttemptSettledPhase(current.fixture.input);
+        const replay = await runEmbeddedAttemptSettledPhase(fixture.input);
 
-        expect(await loadTranscriptEvents(current.target)).toEqual(before);
-        expect(current.activeSession.messages).toEqual(expected);
-        expect(result.messagesSnapshot).toEqual(expected);
-        expect(current.fixture.unsubscribe).toHaveBeenCalledOnce();
-        expect(current.fixture.detachBackend).toHaveBeenCalledOnce();
+        const expected = SessionManager.open(target).buildSessionContext().messages;
+        expect(await loadTranscriptEvents(target)).toEqual(committed);
+        expect(activeSession.messages).toEqual(expected);
+        expect(replay.messagesSnapshot).toEqual(expected);
+        expect(manager.getLeafId()).toBe(previousLeaf);
+        expect(manager.buildSessionContext().messages).toEqual(previousMessages);
       } finally {
-        await current.lifecycle.dispose();
+        Object.defineProperty(state, "messages", descriptor);
+        await lifecycle.dispose();
       }
     });
   });

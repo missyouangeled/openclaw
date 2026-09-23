@@ -3,6 +3,8 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import { isTranscriptMessageAppendCurrentTail } from "../../config/sessions/session-accessor.sqlite-transcript-append-result.js";
+import { appendTranscriptMessageSnapshotSync } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
 import {
@@ -18,6 +20,7 @@ import {
   captureOwnedTranscriptWriteAssertion,
   withOwnedSessionTranscriptWriterFence,
 } from "../../config/sessions/transcript-write-context.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { runInDetachedAsyncContext, trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
@@ -107,7 +110,7 @@ export async function withSessionManagerWrite<T>(
   );
 }
 
-/** Append a file-backed custom note without changing a manager's loaded view. */
+/** Append a custom note without changing a manager's loaded view. */
 export async function appendSessionTranscriptNote(
   target: SessionTranscriptRuntimeTarget,
   message: CustomMessage,
@@ -120,6 +123,27 @@ export async function appendSessionTranscriptNote(
   const captured = withOwnedSessionTranscriptWriterFence(
     captureSessionTranscriptTargetBinding(target),
   );
+  if (isIncognitoSessionKey(captured.sessionKey)) {
+    // The caller retains the process-held incognito owner until its actor cutover.
+    const snapshot = appendTranscriptMessageSnapshotSync(captured, {
+      cwd: process.cwd(),
+      message,
+      ...(options?.config ? { config: options.config } : {}),
+    });
+    if (!snapshot.ok) {
+      throw new Error("Session transcript message was not persisted", { cause: snapshot.error });
+    }
+    const result = snapshot.value.result;
+    if (!result) {
+      throw new Error("Session transcript message was not persisted");
+    }
+    return {
+      messageId: result.messageId,
+      message: result.message,
+      appended: result.appended,
+      currentTail: isTranscriptMessageAppendCurrentTail(snapshot.value),
+    };
+  }
   const unresolved = resolveUnsuffixedSqliteTargetFromSessionStorePath(captured.storePath);
   const candidate = captureSessionStoreReadCandidate(
     unresolved.path,

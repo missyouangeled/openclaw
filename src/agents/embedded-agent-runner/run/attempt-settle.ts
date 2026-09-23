@@ -355,38 +355,38 @@ export async function runEmbeddedAttemptSettledPhase(
       try {
         await input.sessionLock.withOwnedTranscriptWrite(async () => {
           assertBinding();
-          if (target && !isIncognitoSessionKey(target.sessionKey)) {
-            const committed = await withSessionTranscriptWriteAssertion(target, assertBinding, () =>
-              appendSessionTranscriptNote(
+          if (target) {
+            const appendAndPublish = async () => {
+              assertBinding();
+              const committed = await withSessionTranscriptWriteAssertion(
                 target,
-                note,
-                attempt.config ? { config: attempt.config } : undefined,
-              ),
-            );
-            committedMessageId = committed.messageId;
-            assertBinding();
-            assertOwnedTranscriptWriteCommit(target);
-            if (committed.appended || committed.currentTail) {
-              activeSession.agent.state.messages = [...activeSession.messages, committed.message];
-              messagesSnapshot = [...messagesSnapshot, committed.message];
+                assertBinding,
+                () =>
+                  appendSessionTranscriptNote(
+                    target,
+                    note,
+                    attempt.config ? { config: attempt.config } : undefined,
+                  ),
+              );
+              committedMessageId = committed.messageId;
+              assertBinding();
+              assertOwnedTranscriptWriteCommit(target);
+              if (committed.appended || committed.currentTail) {
+                activeSession.agent.state.messages = [...activeSession.messages, committed.message];
+                messagesSnapshot = [...messagesSnapshot, committed.message];
+              }
+            };
+            if (isIncognitoSessionKey(target.sessionKey)) {
+              await withSessionManagerWrite(sessionManager, appendAndPublish);
+            } else {
+              await appendAndPublish();
             }
           } else {
-            // Detached and incognito transcripts retain their process-held manager owner.
             await withSessionManagerWrite(sessionManager, () => {
               assertBinding();
-              let canonicalMessage: AgentMessage = note;
-              if (target) {
-                const committed = sessionManager.appendMessageWithTranscriptAnchor(
-                  note,
-                  attempt.config ? { config: attempt.config } : undefined,
-                );
-                committedMessageId = committed.entryId;
-                canonicalMessage = committed.message;
-              } else {
-                sessionManager.appendMessage(note);
-              }
-              activeSession.agent.state.messages = [...activeSession.messages, canonicalMessage];
-              messagesSnapshot = [...messagesSnapshot, canonicalMessage];
+              sessionManager.appendMessage(note);
+              activeSession.agent.state.messages = [...activeSession.messages, note];
+              messagesSnapshot = [...messagesSnapshot, note];
             });
           }
         });

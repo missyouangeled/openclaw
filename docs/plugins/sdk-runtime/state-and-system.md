@@ -376,8 +376,11 @@ before asynchronous target preparation. The embedded runner awaits its failed-im
 completed result when the owner appended it or confirms it is still the current tail after a lost reply. An idempotent historical result does not reintroduce a note omitted by compaction. Input and target capture precede awaited work; transaction and
 publication checks retain the original writer and session binding. A known
 commit followed by a publication failure retains its message ID and prevents
-model fallback from replaying the append. Detached and incognito notes continue
-through their existing process-held manager owner.
+model fallback from replaying the append. Incognito notes use the same canonical
+append snapshot under their existing process-held native write owner until its
+actor cutover; this path still performs caller-thread SQLite work. It leaves the
+manager's loaded view unchanged and applies the same fresh-append/current-tail
+publication rules. Detached notes continue through their in-memory manager owner.
 Canonical storage close revokes pending asynchronous notes and joins their target
 preparation, accepted work, and cleanup before releasing the store.
 Failed-image notes use the existing message idempotency key to survive redaction

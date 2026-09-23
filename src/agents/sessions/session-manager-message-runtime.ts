@@ -8,6 +8,7 @@ import {
   prepareSqliteTranscriptReadScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import { isTranscriptMessageAppendCurrentTail } from "../../config/sessions/session-accessor.sqlite-transcript-append-result.js";
 import { redactTranscriptMessageForStorage } from "../../config/sessions/session-accessor.sqlite-transcript-store.js";
 import {
   assertSessionStoreReadCandidate,
@@ -108,10 +109,7 @@ export async function appendSessionTranscriptMessage(input: {
         messageId: snapshot.value.result.messageId,
         message: snapshot.value.result.message,
         appended: snapshot.value.result.appended,
-        currentTail:
-          snapshot.value.result.anchor !== undefined &&
-          snapshot.value.result.anchor.generation === snapshot.value.after.generation &&
-          snapshot.value.result.anchor.rawSeq === snapshot.value.after.rawSeq,
+        currentTail: isTranscriptMessageAppendCurrentTail(snapshot.value),
         version: snapshot.value.after,
         lifecycleRevision: snapshot.value.lifecycleRevision,
       };
