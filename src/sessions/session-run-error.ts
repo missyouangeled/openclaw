@@ -7,6 +7,7 @@ import {
   type SessionTranscriptWriteScope,
 } from "../config/sessions/session-accessor.js";
 import { redactSensitiveText } from "../logging/redact.js";
+import { STATE_CONTENTION_SUMMARY } from "./session-run-error-presentation.js";
 
 const SESSION_RUN_ERROR_MAX_CHARS = 160;
 const RUN_FAILED_BEFORE_REPLY_TRANSCRIPT_TYPE = "run-failed-before-reply";
@@ -21,6 +22,7 @@ export async function recordGatewaySessionRunFailure(params: {
   target: SessionTranscriptWriteScope & { sessionId: string };
   runId: string;
   error: unknown;
+  errorKind?: "state_contention";
   assertCommitAllowed?: () => void;
   settleSession?: () => undefined;
 }): Promise<void> {
@@ -39,9 +41,12 @@ export async function recordGatewaySessionRunFailure(params: {
       }
       return {
         customType: RUN_FAILED_BEFORE_REPLY_TRANSCRIPT_TYPE,
-        content: `This turn ended before a reply: ${error}`,
+        content:
+          params.errorKind === "state_contention"
+            ? STATE_CONTENTION_SUMMARY
+            : `This turn ended before a reply: ${error}`,
         display: true,
-        details: { runId, error },
+        details: { runId, error, ...(params.errorKind ? { errorKind: params.errorKind } : {}) },
       };
     },
   });
@@ -51,7 +56,7 @@ export async function recordGatewaySessionRunFailure(params: {
 }
 
 export function resolveSessionRunError(
-  outcome: { error?: string },
+  outcome: { error?: string; errorKind?: unknown },
   status: SessionRunStatus,
 ): string | undefined {
   if (
@@ -60,6 +65,9 @@ export function resolveSessionRunError(
     !outcome.error.trim()
   ) {
     return undefined;
+  }
+  if (outcome.errorKind === "state_contention") {
+    return STATE_CONTENTION_SUMMARY;
   }
   const error = sanitizeSessionRunError(outcome.error);
   if (error.length <= SESSION_RUN_ERROR_MAX_CHARS) {

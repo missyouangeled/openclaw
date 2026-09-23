@@ -1,16 +1,13 @@
 import { MessageChannel, MessagePort, receiveMessageOnPort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore } from "../shared/deferred.js";
-import { acquireWithWait } from "./acquire-with-wait.js";
-import { sleepWithAbort } from "./backoff.js";
 import {
   SqliteCoordinatorError,
   createSqliteLifecycleAggregateError,
 } from "./sqlite-coordinator.js";
+import { acquireStateDatabaseCoordinatorWithWait } from "./state-database-coordinator-acquisition.js";
 import {
   acquireStateDatabaseCoordinator,
-  StateDatabaseCoordinatorContentionError,
-  withStateDatabaseCoordinatorRuntimeDirectory,
   type StateDatabaseCoordinatorRuntime,
 } from "./state-database-coordinator.js";
 
@@ -132,21 +129,15 @@ export async function acquireSqliteWorkerLifecycle(params: {
   };
   let coordinator: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
   try {
-    const held = await acquireWithWait({
+    const held = await acquireStateDatabaseCoordinatorWithWait({
+      operation: "worker-lifecycle",
+      databasePath: params.databasePath,
+      runtime: params.runtime,
       deadlineMs:
         performance.now() + Number(params.deadlineNs - process.hrtime.bigint()) / 1_000_000,
-      pollIntervalMs: 25,
-      maxPollIntervalMs: 250,
-      sleep: (ms) => sleepWithAbort(ms, controller.signal),
-      shouldRetry: (error) =>
-        error instanceof StateDatabaseCoordinatorContentionError &&
-        error.family === "state-lifecycle",
-      acquire: async () => {
+      signal: controller.signal,
+      assertCurrent: async () => {
         await check("check");
-        controller.signal.throwIfAborted();
-        return withStateDatabaseCoordinatorRuntimeDirectory(params.runtime, () =>
-          acquireStateDatabaseCoordinator({ databasePath: params.databasePath, busyTimeoutMs: 0 }),
-        );
       },
     });
     coordinator = held;
