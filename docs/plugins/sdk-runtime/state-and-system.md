@@ -361,8 +361,15 @@ AgentSession and extension `setThinkingLevel` return `Promise<void>`. Await thes
 operations before using the resulting model or thinking state. Other synchronous
 SessionManager operations still need an appropriate caller-owned write boundary.
 
-The private static `SessionManager.appendMessageToTranscript` helper accepts a
-custom message and returns a promise for its persisted `messageId`, canonical
+`SessionManager.appendMessageToTranscript` is a deprecated public SDK compatibility
+method, retained for plugins using the v2026.9.5 contract. It accepts ordinary,
+custom, and Bash execution messages and synchronously returns the persisted
+message ID. It delegates to the canonical append kernel and can perform SQLite
+work on the calling thread. Removal requires a versioned SDK replacement and a
+plugin migration window; the bundled failed-image path does not call it.
+
+Core failed-image settlement uses the internal `appendSessionTranscriptNote`
+operation, which accepts a custom message and returns a promise for its persisted `messageId`, canonical
 `message`, the append owner's `appended` result, and a `currentTail` fact from the same snapshot. File-backed
 notes use the same canonical agent worker and writer queue, reserving their turn
 before asynchronous target preparation. The embedded runner awaits its failed-image note before publishing that stored message in live context or the
@@ -371,7 +378,7 @@ publication checks retain the original writer and session binding. A known
 commit followed by a publication failure retains its message ID and prevents
 model fallback from replaying the append. Detached and incognito notes continue
 through their existing process-held manager owner.
-Canonical storage close revokes pending static appends and joins their target
+Canonical storage close revokes pending asynchronous notes and joins their target
 preparation, accepted work, and cleanup before releasing the store.
 Failed-image notes use the existing message idempotency key to survive redaction
 and same-run retries. Existing unkeyed notes retain their run-metadata matching.

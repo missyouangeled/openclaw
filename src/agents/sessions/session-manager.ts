@@ -5,10 +5,7 @@
  * behavior are split into focused internal modules.
  */
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
-import type {
-  SessionTranscriptRuntimeTarget,
-  TranscriptMessageAppendResult,
-} from "../../config/sessions/session-accessor.js";
+import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
 import { prepareTranscriptRewriteSync } from "../../config/sessions/session-accessor.sqlite-branch-rewrite.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
@@ -21,15 +18,11 @@ import {
   validateSessionTranscriptContextVersion,
 } from "../../config/sessions/session-accessor.sqlite-model-context.js";
 import { loadTranscriptReadSnapshotSync } from "../../config/sessions/session-accessor.sqlite-read.js";
+import { appendTranscriptMessageSync } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import {
   assertCurrentSessionTranscriptHeader,
   findSessionTranscriptHeader,
 } from "../../config/sessions/session-entry-codec.js";
-import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
-import {
-  assertSessionStoreReadCandidate,
-  captureSessionStoreReadCandidate,
-} from "../../config/sessions/session-store-read-candidates.js";
 import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
 import {
   resolveSessionTranscriptReadFence,
@@ -38,29 +31,13 @@ import {
 import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-read-worker-runtime.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { captureSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
-import {
-  captureOwnedTranscriptWriteAssertion,
-  withOwnedSessionTranscriptWriterFence,
-} from "../../config/sessions/transcript-write-context.js";
+import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { Message } from "../../llm/types.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
-import { runInDetachedAsyncContext, trackAsyncWork } from "../../shared/async-work-scope.js";
-import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  registerOpenClawAgentDatabaseAsyncResource,
-  registerOpenClawAgentDatabaseReadCandidateResource,
-} from "../../state/openclaw-agent-db-resources.js";
-import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
-import {
-  captureOpenClawStateDatabaseReadAdmission,
-  registerOpenClawStateDatabaseAsyncResource,
-} from "../../state/openclaw-state-db-cache.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import { SessionManagerBranching } from "./session-manager-branching.js";
-import { SessionTranscriptMessageCommittedError } from "./session-manager-message-error.js";
 import type { AppendPersistenceOptions, FileEntry, SessionEntry } from "./session-manager-types.js";
 import type {
   SessionManagerBoundedContext,
@@ -446,107 +423,28 @@ export class SessionManager extends SessionManagerBranching {
     );
   }
 
-  /** Append a file-backed custom note without changing a manager's loaded view. */
-  static async appendMessageToTranscript(
+  /**
+   * @deprecated Retained for the v2026.9.5 plugin SDK contract.
+   * Removal requires a versioned SDK replacement and plugin migration window.
+   */
+  static appendMessageToTranscript(
     target: SessionTranscriptRuntimeTarget,
-    message: CustomMessage,
+    message: Message | CustomMessage | BashExecutionMessage,
     options?: Pick<AppendPersistenceOptions, "config">,
-  ): Promise<
-    Pick<TranscriptMessageAppendResult<CustomMessage>, "messageId" | "message" | "appended"> & {
-      currentTail: boolean;
-    }
-  > {
-    const captured = withOwnedSessionTranscriptWriterFence(
-      captureSessionTranscriptTargetBinding(target),
-    );
-    const unresolved = resolveUnsuffixedSqliteTargetFromSessionStorePath(captured.storePath);
-    const candidate = captureSessionStoreReadCandidate(
-      unresolved.path,
-      unresolved.agentId || captured.storePath.endsWith(".sqlite") ? undefined : "sibling-family",
-    );
-    const state = captureOpenClawStateDatabaseReadAdmission(
-      resolveOpenClawStateSqlitePath(captured.env),
-    );
-    const assertOwned = captureOwnedTranscriptWriteAssertion(captured);
-    const completion = createDeferredCore();
-    let revoked = false;
-    const revoke = () => {
-      revoked = true;
-    };
-    const assertCurrent = () => {
-      if (revoked) {
-        throw new Error("Session transcript append was revoked before completion");
-      }
-      state.assertCurrent();
-      assertOwned();
-      assertSessionStoreReadCandidate(candidate.path, [candidate]);
-    };
-    const input = {
-      target: captured,
-      candidate,
-      message: structuredClone(message),
-      ...(options?.config ? { config: structuredClone(options.config) } : {}),
+  ): string {
+    const outcome = appendTranscriptMessageSync(target, {
       cwd: process.cwd(),
-      assertCurrent,
-    };
-    const releases: Array<() => void> = [];
-    // Storage close must also join preparation, before a native executor exists.
-    try {
-      for (const pathname of new Set([candidate.path, candidate.physicalPath])) {
-        const resource = { path: pathname, revoke, close: () => completion.promise };
-        releases.push(
-          unresolved.agentId
-            ? registerOpenClawAgentDatabaseAsyncResource({
-                ...resource,
-                agentId: unresolved.agentId,
-              })
-            : registerOpenClawAgentDatabaseReadCandidateResource({
-                ...resource,
-                scope: candidate.scope,
-              }),
-        );
-      }
-      releases.push(
-        registerOpenClawStateDatabaseAsyncResource({
-          close: async (identity) => {
-            if (!identity || identity.key === state.identity.key) {
-              revoke();
-              await completion.promise;
-            }
-          },
-        }),
-      );
-      assertCurrent();
-      // Reserve the existing store lane before lazy loading or target preparation can reorder calls.
-      return await trackAsyncWork(() =>
-        runOpenClawAgentWriteAdmission(
-          { agentId: captured.agentId, path: unresolved.path, env: captured.env },
-          async () => {
-            assertCurrent();
-            const { appendSessionTranscriptMessage } = await runInDetachedAsyncContext(
-              () => import("./session-manager-message-runtime.js"),
-            );
-            const committed = await appendSessionTranscriptMessage(input);
-            try {
-              assertCurrent();
-            } catch (error) {
-              throw new SessionTranscriptMessageCommittedError(
-                committed.messageId,
-                error,
-                captured,
-              );
-            }
-            return committed;
-          },
-          true,
-        ),
-      );
-    } finally {
-      completion.resolve();
-      for (const unregister of releases.toReversed()) {
-        unregister();
-      }
+      message,
+      ...(options?.config ? { config: options.config } : {}),
+    });
+    if (!outcome.ok) {
+      throw new Error("Session transcript message was not persisted", { cause: outcome.error });
     }
+    const result = outcome.value;
+    if (!result) {
+      throw new Error("Session transcript message was not persisted");
+    }
+    return result.messageId;
   }
 
   static inMemory(cwd: string = process.cwd()): SessionManager {

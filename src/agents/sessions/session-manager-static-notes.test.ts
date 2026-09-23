@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import {
+  inspectTranscriptEventsSync,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
@@ -12,8 +13,10 @@ import { waitForSessionTranscriptProjection } from "../../config/sessions/sessio
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import * as workerStore from "../../infra/sqlite-worker-store.js";
 import type { SqliteWorkerOperations, SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
+import type { Message } from "../../llm/types.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { resetSecretRedactionRegistryForTest } from "../../logging/secret-redaction-registry.test-support.js";
+import { SessionManager as SdkSessionManager } from "../../plugin-sdk/agent-sessions.js";
 import * as asyncWork from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import * as agentResources from "../../state/openclaw-agent-db-resources.js";
@@ -23,9 +26,69 @@ import * as stateResources from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
+import type { BashExecutionMessage, CustomMessage } from "./messages.js";
+import { appendSessionTranscriptNote } from "./session-manager-write-admission.js";
 import { SessionManager } from "./session-manager.js";
 
-describe("SessionManager.appendMessageToTranscript", () => {
+describe("released agent-sessions SDK static append", () => {
+  const cases: Array<{
+    name: string;
+    message: Message | CustomMessage | BashExecutionMessage;
+  }> = [
+    { name: "ordinary", message: makeUserMessage("SDK user message", 1) },
+    {
+      name: "custom",
+      message: {
+        role: "custom",
+        customType: "sdk-note",
+        content: "SDK custom message",
+        display: true,
+        timestamp: 2,
+      },
+    },
+    {
+      name: "bash",
+      message: {
+        role: "bashExecution",
+        command: "echo synthetic",
+        output: "synthetic",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+        timestamp: 3,
+      },
+    },
+  ];
+  it.each(cases)(
+    "returns a synchronous ID with immediately persisted $name content",
+    async ({ message }) => {
+      await withOpenClawTestState({ label: "sdk-static-append-contract" }, async (state) => {
+        const target = {
+          agentId: "main",
+          sessionId: "sdk-static",
+          sessionKey: "agent:main:sdk-static",
+          storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+          env: { OPENCLAW_STATE_DIR: state.stateDir },
+        };
+        await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+        const id: string = SdkSessionManager.appendMessageToTranscript(target, message);
+        try {
+          expect(typeof id).toBe("string");
+          expect(inspectTranscriptEventsSync(target).events.at(-1)).toMatchObject({
+            type: "message",
+            id,
+            message,
+          });
+        } finally {
+          // Join the broken asynchronous implementation when exercising the regression.
+          await Promise.resolve(id);
+        }
+      });
+    },
+  );
+});
+
+describe("appendSessionTranscriptNote", () => {
   it.each(["agent", "shared-state"] as const)(
     "retains pre-import append custody through canonical %s close",
     async (owner) => {
@@ -113,7 +176,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
           display: true,
           timestamp: 2,
         };
-        const append = SessionManager.appendMessageToTranscript(target, note).then(
+        const append = appendSessionTranscriptNote(target, note).then(
           (value) => ({ status: "fulfilled" as const, value }),
           (reason: unknown) => ({ status: "rejected" as const, reason }),
         );
@@ -150,7 +213,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
           release.resolve();
           const [appendOutcome, closeOutcome] = await Promise.all([append, closing]);
           const afterClose = await loadTranscriptEvents(target);
-          const fresh = await SessionManager.appendMessageToTranscript(target, {
+          const fresh = await appendSessionTranscriptNote(target, {
             ...note,
             content: "Fresh append after close",
             timestamp: 3,
@@ -249,9 +312,9 @@ describe("SessionManager.appendMessageToTranscript", () => {
           display: true,
           timestamp: 1,
         });
-        const first = SessionManager.appendMessageToTranscript(target, note("first"));
+        const first = appendSessionTranscriptNote(target, note("first"));
         void first.catch(() => undefined);
-        let second: ReturnType<typeof SessionManager.appendMessageToTranscript> | undefined;
+        let second: ReturnType<typeof appendSessionTranscriptNote> | undefined;
         try {
           await Promise.race([
             entered.promise,
@@ -259,7 +322,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
               throw new Error("First note settled before target preparation was held");
             }),
           ]);
-          second = SessionManager.appendMessageToTranscript(target, note("second"));
+          second = appendSessionTranscriptNote(target, note("second"));
           await Promise.race([queued.promise, second]);
           release.resolve();
           const [firstResult, secondResult] = await Promise.all([first, second]);
@@ -376,7 +439,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
               requireStateLifecycle,
             ),
         );
-      const first = SessionManager.appendMessageToTranscript(target, note, { config });
+      const first = appendSessionTranscriptNote(target, note, { config });
       void first.catch(() => undefined);
       target.sessionId = replacement.sessionId;
       target.sessionKey = replacement.sessionKey;
@@ -384,7 +447,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
       note.content = "Changed caller content";
       note.details.nested.value = "changed";
       config.logging.redactPatterns.splice(0, 1, "safe");
-      let second: ReturnType<typeof SessionManager.appendMessageToTranscript> | undefined;
+      let second: ReturnType<typeof appendSessionTranscriptNote> | undefined;
       let secondSettled = false;
       try {
         await Promise.race([
@@ -399,7 +462,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
           idempotencyKey: "static-second-note",
           timestamp: 2,
         };
-        second = SessionManager.appendMessageToTranscript(originalTarget, secondNote);
+        second = appendSessionTranscriptNote(originalTarget, secondNote);
         void second.then(
           () => {
             secondSettled = true;
@@ -422,7 +485,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
         const secondId = secondResult.messageId;
         const beforeReplay = await loadTranscriptEvents(originalTarget);
         expect(
-          await SessionManager.appendMessageToTranscript(originalTarget, originalNote, {
+          await appendSessionTranscriptNote(originalTarget, originalNote, {
             config: originalConfig,
           }),
         ).toEqual({ ...firstResult, appended: false, currentTail: false });
@@ -495,7 +558,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
           }),
         );
       try {
-        const rejected = await SessionManager.appendMessageToTranscript(target, note).then(
+        const rejected = await appendSessionTranscriptNote(target, note).then(
           () => {
             throw new Error("Expected changed redaction to refuse the commit");
           },
@@ -508,7 +571,7 @@ describe("SessionManager.appendMessageToTranscript", () => {
         expect(isRecordedModelFallbackStop(rejected)).toBe(false);
         expect(await loadTranscriptEvents(target)).toEqual(before);
         spy.mockRestore();
-        const result = await SessionManager.appendMessageToTranscript(target, note);
+        const result = await appendSessionTranscriptNote(target, note);
         const after = await loadTranscriptEvents(target);
         expect(after.slice(0, before.length)).toEqual(before);
         expect(after).toHaveLength(before.length + 1);

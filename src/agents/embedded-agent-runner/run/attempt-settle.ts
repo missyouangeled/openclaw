@@ -20,9 +20,11 @@ import {
 } from "../../agent-run-terminal-outcome.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import type { AgentMessage } from "../../runtime/index.js";
-import { SessionManager } from "../../sessions/index.js";
 import { SessionTranscriptMessageCommittedError } from "../../sessions/session-manager-message-error.js";
-import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
+import {
+  appendSessionTranscriptNote,
+  withSessionManagerWrite,
+} from "../../sessions/session-manager-write-admission.js";
 import { log } from "../logger.js";
 import { clearActiveEmbeddedRun } from "../runs.js";
 import { joinWithRunLivenessDeadline, RUN_LIVENESS_JOIN_TIMEOUT_MS } from "./abortable.js";
@@ -355,7 +357,7 @@ export async function runEmbeddedAttemptSettledPhase(
           assertBinding();
           if (target && !isIncognitoSessionKey(target.sessionKey)) {
             const committed = await withSessionTranscriptWriteAssertion(target, assertBinding, () =>
-              SessionManager.appendMessageToTranscript(
+              appendSessionTranscriptNote(
                 target,
                 note,
                 attempt.config ? { config: attempt.config } : undefined,
