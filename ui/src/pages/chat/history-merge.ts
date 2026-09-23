@@ -433,7 +433,14 @@ export function reconcileChatInputCustody(
       .map((item) => item.runId)
       .filter((runId) => typeof runId === "string"),
   );
-  retireChatSubmissionDisplay(owner, acceptedRunIds);
+  // Only page items render a custody row; a bare receipt has no display row and
+  // therefore must not retire the optimistic bubble (fail-sticky).
+  const custodyRunIds = new Set(
+    (page?.items ?? [])
+      .map((item) => item.runId)
+      .filter((runId): runId is string => typeof runId === "string"),
+  );
+  retireChatSubmissionDisplay(owner, acceptedRunIds, custodyRunIds);
   return {
     acceptedRunIds,
     page: page ?? { items: [], total: 0 },
@@ -444,6 +451,7 @@ export function reconcileChatInputCustody(
 export function retireChatSubmissionDisplay(
   owner: ChatSessionProjectionOwner,
   acceptedRunIds: ReadonlySet<string>,
+  custodyRunIds: ReadonlySet<string> = new Set(),
 ): void {
   const scope = readChatSessionProjectionScope(owner, {
     agentId: resolveUiSelectedSessionAgentId(owner),
@@ -452,17 +460,46 @@ export function retireChatSubmissionDisplay(
   submissions?.accept(acceptedRunIds);
   if (acceptedRunIds.size) {
     const projection = getChatSessionProjection(owner, scope);
-    const retired = retirePendingUserEntries(projection, acceptedRunIds);
+    const retired = retirePendingUserEntries(projection, acceptedRunIds, custodyRunIds);
     if (retired !== projection) {
       publishChatSessionProjection(owner, retired);
     }
   }
 }
 
+/** Run IDs whose optimistic bubble already has an authoritative user row in the projection. */
+function canonicalReplacedRunIds(projection: SessionProjectionState): Set<string> {
+  const replaced = new Set<string>();
+  for (const entry of projection.entries) {
+    const identity = entry.identity;
+    if (
+      !entry.pending &&
+      identity?.role === "user" &&
+      (identity.id !== null || identity.sequence !== null)
+    ) {
+      const runId = identity.sendId ?? identity.runId;
+      if (runId) {
+        replaced.add(runId);
+      }
+    }
+  }
+  return replaced;
+}
+
 function retirePendingUserEntries(
   projection: SessionProjectionState,
   acceptedRunIds: ReadonlySet<string>,
+  custodyRunIds: ReadonlySet<string>,
+  force = false,
 ): SessionProjectionState {
+  // A pending bubble may be removed only when a replacement is actually shown:
+  // either a canonical persisted user row already in the projection, or a custody
+  // row rendered by the pending-inputs page. A bare receipt is not a replacement.
+  // `force` applies only after an authoritative initial-submission receipt has
+  // already been matched (including aggregate consumption via consumedByEventId).
+  const replacedRunIds = canonicalReplacedRunIds(projection);
+  const hasReplacement = (runId: string) =>
+    replacedRunIds.has(runId) || custodyRunIds.has(runId);
   const entries = projection.entries.filter(
     (entry) =>
       !(
@@ -470,7 +507,8 @@ function retirePendingUserEntries(
         entry.identity?.role === "user" &&
         entry.identity.id === null &&
         entry.identity.sequence === null &&
-        acceptedRunIds.has(entry.pendingRunId ?? "")
+        acceptedRunIds.has(entry.pendingRunId ?? "") &&
+        (force || hasReplacement(entry.pendingRunId ?? ""))
       ),
   );
   return entries.length === projection.entries.length
@@ -578,7 +616,7 @@ export function reduceChatSessionProjection(
         : event;
   let projection =
     initialRunId && handoff && !handoff.pending
-      ? retirePendingUserEntries(current, new Set([initialRunId]))
+      ? retirePendingUserEntries(current, new Set([initialRunId]), new Set(), true)
       : current;
   if (event.type === "snapshotLoaded" && handoff?.pending && options.runActive !== false) {
     projection = reduceSessionProjection(projection, {
