@@ -439,9 +439,11 @@ export function reconcileChatInputCustody(
       .filter((runId) => typeof runId === "string"),
   );
   const pendingInitialRunId =
-    owner.chatSubmissions
-      ?.readInitial(owner.sessionKey, owner.client ?? owner, owner.currentSessionId)
-      ?.pendingRunId ?? null;
+    owner.chatSubmissions?.readInitial(
+      owner.sessionKey,
+      owner.client ?? owner,
+      owner.currentSessionId,
+    )?.pendingRunId ?? null;
   const retiredRunIds = new Set(
     [
       ...(page?.items ?? []).map((item) => item.runId),
@@ -449,10 +451,7 @@ export function reconcileChatInputCustody(
         // A pending receipt only confirms server custody. It must not retire the
         // foreground optimistic bubble (no durable backing yet), but a delivered
         // source is already persisted in the outbox, so it can retire.
-        .filter(
-          (receipt) =>
-            receipt.state === "consumed" || receipt.runId !== pendingInitialRunId,
-        )
+        .filter((receipt) => receipt.state === "consumed" || receipt.runId !== pendingInitialRunId)
         .map((receipt) => receipt.runId),
     ].filter((runId): runId is string => typeof runId === "string"),
   );
