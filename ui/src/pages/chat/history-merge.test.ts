@@ -14,10 +14,10 @@ import {
   getChatSessionProjection,
   readChatSessionProjectionScope,
   reduceChatSessionProjection,
-  retireChatSubmissionDisplay,
   setChatRunOwner,
   publishChatSessionProjection,
   publishChatSessionProjectionMessages,
+  reconcileChatInputCustody,
 } from "./history-merge.ts";
 import type { CompactionStatus } from "./tool-stream-contract.ts";
 import { buildInitialChatSubmission } from "./user-message-content.ts";
@@ -479,6 +479,27 @@ describe("pane-owned canonical session projection", () => {
     expect(chatSubmissions.readInitial(sessionKey, client)?.pending).toBe(false);
   });
 
+  it("keeps the initial optimistic bubble on a pending receipt, retires it when consumed", () => {
+    const { owner, initial } = createInitialHandoffFixture(true);
+    reduceChatSessionProjection(owner, {
+      type: "sendPending",
+      runId: "initial-run",
+      message: initial.message,
+    });
+    expect(owner.chatMessages).toContain(initial.message);
+
+    // A pending receipt only confirms server custody; with no rendered custody or
+    // canonical row it must not drop the just-sent bubble (the reported vanish).
+    reconcileChatInputCustody(owner, undefined, [{ runId: "initial-run", state: "pending" }]);
+    expect(owner.chatMessages).toContain(initial.message);
+
+    // A consumed receipt means the input joined the transcript and retires it.
+    reconcileChatInputCustody(owner, undefined, [
+      { runId: "initial-run", state: "consumed", consumedByEventId: "aggregate" },
+    ]);
+    expect(owner.chatMessages).not.toContain(initial.message);
+  });
+
   it("keeps each split pane's live projection independent", () => {
     const scope = { sessionKey: "agent:main:shared", sessionId: "shared-session" };
     const firstPane = { sessionKey: scope.sessionKey, chatMessages: [] as unknown[] };
@@ -826,47 +847,6 @@ describe("pane-owned canonical session projection", () => {
         scope,
       }).messages,
     ).toEqual([native, imported]);
-  });
-
-  it("does not drop the optimistic bubble on a bare receipt (fail-sticky)", () => {
-    const owner = { sessionKey: "agent:main:receipt", chatMessages: [] as unknown[] };
-    const bubble = {
-      role: "user",
-      content: [{ type: "text", text: "still reading this" }],
-      timestamp: 100,
-    };
-    reduceChatSessionProjection(owner, {
-      type: "sendPending",
-      runId: "bare-run",
-      message: bubble,
-    });
-    expect(owner.chatMessages).toEqual([bubble]);
-
-    // A bare accepted/consumption receipt carries no custody row and no canonical
-    // persisted row, so the optimistic bubble must stay on screen.
-    retireChatSubmissionDisplay(owner, new Set(["bare-run"]));
-    expect(owner.chatMessages).toEqual([bubble]);
-  });
-
-  it("retires the optimistic bubble once a custody row replaces it", () => {
-    const owner = { sessionKey: "agent:main:custody", chatMessages: [] as unknown[] };
-    const bubble = {
-      role: "user",
-      content: [{ type: "text", text: "accepted now" }],
-      timestamp: 100,
-    };
-    reduceChatSessionProjection(owner, {
-      type: "sendPending",
-      runId: "custody-run",
-      message: bubble,
-    });
-
-    retireChatSubmissionDisplay(
-      owner,
-      new Set(["custody-run"]),
-      new Set(["custody-run"]),
-    );
-    expect(owner.chatMessages).toEqual([]);
   });
 
   it("adopts an attachment-only pending turn by its run identity", () => {
