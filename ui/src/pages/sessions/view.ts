@@ -44,7 +44,6 @@ import { SESSION_DRAG_MIME } from "../../lib/sessions/drag.ts";
 import {
   groupSessionRows,
   type SessionRowGroup,
-  type SessionsGroupBy,
   UNGROUPED_ID,
 } from "../../lib/sessions/grouping.ts";
 import type { SessionArchivedFilter } from "../../lib/sessions/index.ts";
@@ -54,19 +53,17 @@ import {
 } from "../../lib/sessions/route-navigation.ts";
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
-import { renderSessionsAdvancedFilters } from "./sessions-filters.ts";
+import {
+  renderSessionsAdvancedFilters,
+  type SessionsAdvancedFiltersProps,
+} from "./sessions-filters.ts";
 import { renderTranscriptSearch, type TranscriptSearchProps } from "./transcript-search-view.ts";
 
-export type SessionsProps = TranscriptSearchProps & {
+export type SessionsProps = {
   loading: boolean;
   refreshing: boolean;
   result: SessionsListResult | null;
   error: string | null;
-  activeMinutes: string;
-  limit: string;
-  includeGlobal: boolean;
-  includeUnknown: boolean;
-  statusFilter: SessionArchivedFilter;
   basePath: string;
   agentId: string;
   mainKey: string;
@@ -74,9 +71,6 @@ export type SessionsProps = TranscriptSearchProps & {
   agentIdentityById: Record<string, AgentIdentityResult>;
   sortColumn: "key" | "kind" | "updated" | "tokens";
   sortDir: "asc" | "desc";
-  groupBy: SessionsGroupBy;
-  /** Multi-identity gateways only; hides the Person mode elsewhere. */
-  personGroupingAvailable: boolean;
   knownCategories: string[];
   page: number;
   pageSize: number;
@@ -85,21 +79,12 @@ export type SessionsProps = TranscriptSearchProps & {
   expandedSessionKey: string | null;
   patchWriteDisabledReason?: string;
   patchAdminDisabledReason?: string;
-  groupWriteDisabledReason?: string;
   deleteArchivedDisabledReason?: string;
   deleteSelectedDisabledReason?: string;
-  onFiltersChange: (next: {
-    activeMinutes: string;
-    limit: string;
-    includeGlobal: boolean;
-    includeUnknown: boolean;
-  }) => void;
   onClearFilters: () => void;
   onSearchChange: (query: string) => void;
   onSortChange: (column: "key" | "kind" | "updated" | "tokens", dir: "asc" | "desc") => void;
-  onGroupByChange: (mode: SessionsGroupBy) => void;
   onAssignCategory: (key: string, category: string | null) => void;
-  onRequestNewCategory: (sessionKey?: string) => void;
   onLoadMore: () => void;
   onPageChange: (page: number) => void;
   onPageSizeChange: (size: number) => void;
@@ -133,7 +118,8 @@ export type SessionsProps = TranscriptSearchProps & {
     trigger: HTMLElement | null,
   ) => void;
   onToggleDetails: (sessionKey: string) => void;
-};
+} & TranscriptSearchProps &
+  SessionsAdvancedFiltersProps;
 
 const VERBOSE_LEVEL_VALUES = ["", "off", "on", "full"] as const;
 const FAST_LEVEL_VALUES = ["", "auto", "on", "off"] as const;

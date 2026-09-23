@@ -9,23 +9,28 @@ import {
   SESSION_GROUP_MODES,
   type SessionsGroupBy,
 } from "../../lib/sessions/grouping.ts";
+import type { SessionArchivedFilter } from "../../lib/sessions/index.ts";
 import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
-import type { SessionsProps } from "./view.ts";
 
-type SessionsAdvancedFiltersProps = Pick<
-  SessionsProps,
-  | "activeMinutes"
-  | "limit"
-  | "includeGlobal"
-  | "includeUnknown"
-  | "statusFilter"
-  | "groupBy"
-  | "personGroupingAvailable"
-  | "groupWriteDisabledReason"
-  | "onFiltersChange"
-  | "onGroupByChange"
-  | "onRequestNewCategory"
->;
+export type SessionsAdvancedFiltersProps = {
+  activeMinutes: string;
+  limit: string;
+  includeGlobal: boolean;
+  includeUnknown: boolean;
+  statusFilter: SessionArchivedFilter;
+  groupBy: SessionsGroupBy;
+  /** Multi-identity gateways only; hides the Person mode elsewhere. */
+  personGroupingAvailable: boolean;
+  groupWriteDisabledReason?: string;
+  onFiltersChange: (next: {
+    activeMinutes: string;
+    limit: string;
+    includeGlobal: boolean;
+    includeUnknown: boolean;
+  }) => void;
+  onGroupByChange: (mode: SessionsGroupBy) => void;
+  onRequestNewCategory: (sessionKey?: string) => void;
+};
 
 const SESSION_GROUP_MODE_LABELS = {
   none: "sessionsView.groupByNone",
