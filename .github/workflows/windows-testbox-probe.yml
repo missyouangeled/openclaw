@@ -888,11 +888,17 @@ jobs:
           } catch {}
 
           const receiptErrors = [];
-          const receipts = (marker) => [...log.matchAll(new RegExp(`^${marker} (\\{.*\\})\\r?$`, "gm"))]
-            .flatMap((match) => {
-              try { return [JSON.parse(match[1])]; }
+          const receipts = (marker) => {
+            const payloads = [...log.matchAll(new RegExp(`^${marker} (\\{.*\\})\\r?$`, "gm"))]
+              .map((match) => match[1]);
+            // Multiple reporters can repeat the same complete retirement payload.
+            // Keep every distinct payload so conflicting or extra receipts still fail.
+            const selected = marker === "WINDOWS_CENSUS_RETIREMENT" ? [...new Set(payloads)] : payloads;
+            return selected.flatMap((payload) => {
+              try { return [JSON.parse(payload)]; }
               catch { receiptErrors.push(marker); return []; }
             });
+          };
           const retirement = receipts("WINDOWS_CENSUS_RETIREMENT");
           const sharing = receipts("WINDOWS_CENSUS_SHARING");
           const attested = (facts) => Boolean(facts && runtime && binding &&
